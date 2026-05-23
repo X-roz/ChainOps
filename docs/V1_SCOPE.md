@@ -1,49 +1,48 @@
 # ChainOps — V1 Scope of Work
 
-**Status:** Draft
-**Owner:** Vignesh Sundarajan
-**Last updated:** 2026-05-23
+**Status:** Locked
+**Owner:** Vicky
+**Last updated:** 2026-05-24
 
 ---
 
 ## 1. Overview
 
-ChainOps V1 is a forward-only Ethereum wallet monitoring and operational reporting platform deployed against the **Sepolia testnet**. Users register a wallet address; from the moment of registration onward, ChainOps observes on-chain activity for that wallet, indexes it into a durable audit ledger, and exposes it through a dashboard, search/filter views, and exportable reports.
+ChainOps is a subscription-aware blockchain monitoring infrastructure platform. V1 is a forward-only Ethereum wallet activity indexer deployed against the **Sepolia testnet** as the live demo network, built with **network-agnostic code** so that future deployments can target Ethereum mainnet, Arbitrum, Base, or Optimism via configuration changes rather than code rewrites.
 
-The V1 is deliberately scoped to demonstrate **production-minded blockchain infrastructure thinking** — distributed systems design, event-driven architecture, async processing, observability, and operational reliability — without the operational burden of a fully indexed historical product. It is an open-source, publicly hostable MVP intended as a portfolio-grade demonstration of architectural decision-making.
+V1 demonstrates production-minded blockchain infrastructure thinking: a global wallet-indexing layer with shared scanning across subscribers, a lifecycle-aware account state machine (free trial → active → dormant), SIWE-based identity, an on-chain subscription contract gating premium features, and the observability/deployment maturity expected of a real backend system. It is an open-source MVP intended as a portfolio-grade demonstration of architectural decision-making, and as a codebase that could plausibly become a real product on mainnet with V2 work.
 
 ---
 
 ## 2. Product Goals
 
-V1 succeeds if the following are true:
+V1 succeeds if:
 
-- A user can register an Ethereum wallet on Sepolia and, within ~60 seconds of any subsequent ETH or USDC transfer involving that wallet, see the transaction appear in their dashboard.
-- The transaction state transitions correctly from _pending_ through _confirmed_ to _finalized_, and reorgs during the unconfirmed window are handled without corrupting the audit ledger.
-- A user can filter, search, and export their wallet's activity to CSV/XLSX.
-- A premium feature gate is enforced via an on-chain subscription contract, demonstrating Web3-native access control.
-- The system exposes meaningful operational metrics (listener lag, RPC error rate, queue depth, reorg counts) via Prometheus, with Grafana dashboards.
-- The full stack is reproducible locally via `docker-compose up`, and deployable to free/cheap hosting tiers.
+- A user can sign in via SIWE, receive a 20-day free trial with one tracked wallet, and watch their Sepolia activity (ETH + USDC transfers, plus all outgoing transactions) appear in their dashboard within ~90 seconds of being mined.
+- Transactions transition correctly from *seen* to *confirmed*, and reorgs during the unconfirmed window result in `reverted` without ledger corruption.
+- The account lifecycle (FREE_TRIAL → ACTIVE → EXPIRED → DORMANT, plus user-initiated CANCELED / DELETED) is enforced by a scheduled job, with the UI accurately reflecting current state.
+- Premium users can track up to 5 wallets and access export plus the four named analytics views, gated by on-chain subscription state.
+- The same wallet tracked by multiple users is **scanned once globally**, with activity fanned out to all subscribed users.
+- The system exposes meaningful operational metrics via Prometheus, with Grafana dashboards.
+- The full stack runs locally via `docker-compose up`, and the codebase is structured so that a V2 deployment to a different EVM network requires only configuration changes (RPC endpoint, asset contract addresses, network-appropriate confirmation threshold).
 
 ---
 
-## 3. Explicit Non-Goals (V1)
+## 3. Explicit Non-Goals
 
-These are out of scope and **must not be built** in V1. They exist as a forcing function against feature creep.
-
-- **No historical backfill.** ChainOps does not index transactions that occurred before a wallet was registered. The product story is "flight recorder from the moment you plug in."
-- **No mainnet support.** Sepolia only.
-- **No multi-chain support.** Ethereum (Sepolia) only.
-- **No third-party indexer integration** (Alchemy/Etherscan/Covalent APIs are not used for historical lookups in V1).
-- **No user-provided API key vault.** ChainOps does not custody user credentials for external services.
-- **No mempool / pending-pre-block monitoring.** Only mined blocks are observed.
-- **No recurring on-chain subscriptions.** The subscription contract is one-shot, fixed-duration access. No keeper, no allowance-based auto-debit.
-- **No Kubernetes as the deployment substrate.** K8s manifests are produced as a separate `infra/kubernetes/` artifact for portfolio purposes but are not how the live demo is hosted.
-- **No tokens beyond ETH and USDC.**
-- **No email/SMS notifications.** In-app notifications only (real-time feed counts as the notification surface in V1).
-- **No custodial behaviour.** ChainOps never holds user private keys. Wallet connection is read-only.
-- **No email / password / OAuth authentication.** Authentication is wallet-based only via Sign-In With Ethereum (SIWE, EIP-4361). No password storage, no email verification flow, no third-party OAuth providers.
-- **No account recovery.** Loss of access to the sign-in wallet means loss of access to the ChainOps account. This is a deliberate property of the SIWE-only auth model, not a bug.
+- **Live multi-chain deployment.** V1 deploys a single listener instance against Sepolia. The code is network-agnostic; the deployment is single-network. Running additional listeners for other chains is V2.
+- **Mainnet deployment.** Sepolia only. Mainnet has gas economics, audit requirements, regulatory considerations, and operational SLAs that V1 does not engage with.
+- **Historical backfill.** Reactivating a DORMANT account does NOT recover the activity that occurred during the dormant window. The UI displays an explicit gap notification. Backfill is a paid V2 feature.
+- **Non-EVM chains.** Solana, Bitcoin, Cosmos, etc. are out of scope indefinitely.
+- **Mempool / pre-confirmation monitoring.** Only mined blocks are observed.
+- **Recurring on-chain subscriptions.** The subscription contract is one-shot, fixed-duration (30 days for 30 test-USDC). No keeper, no allowance-based auto-debit, no `PAST_DUE` state.
+- **No custodial behaviour.** ChainOps never holds user private keys. Wallet connection is read-only for monitoring.
+- **No email / password / OAuth authentication.** SIWE-only.
+- **No account recovery.** Loss of the sign-in wallet means loss of the account.
+- **Multiple auth wallets per user.** The `auth_wallets` table shape permits N rows per user in V2, but V1 enforces exactly one auth wallet per user at the application layer.
+- **Alerting subsystem.** Email, webhook, Telegram notifications are V2. V1 has in-app feed only.
+- **Tokens beyond ETH and USDC on Sepolia.** The generic `assets` / `asset_deployments` schema supports extension; V1 seeds two rows.
+- **Kubernetes as the live deployment substrate.** K8s manifests live under `infra/kubernetes/` as a portfolio artifact; the live demo runs on a single VPS via docker-compose.
 
 ---
 
@@ -51,84 +50,141 @@ These are out of scope and **must not be built** in V1. They exist as a forcing 
 
 ### 4.1 Identity and authentication (SIWE)
 
-- Authentication is Sign-In With Ethereum (EIP-4361). The user connects their wallet, requests a nonce from the backend, signs a structured message containing the nonce, and the backend verifies the signature.
-- The wallet address that signs the message becomes the user's **sign-in wallet** (also called the "primary wallet").
-- Internal user identity is an opaque `user_id` (UUID). The sign-in wallet is stored as an auth method attached to the `user_id`, not as the primary key. This preserves optionality for adding other auth methods in V2+ without re-architecting the schema.
-- Session is issued as a short-lived JWT tied to the `user_id`.
+- Authentication is Sign-In With Ethereum (EIP-4361). User connects wallet, backend issues nonce, user signs structured message, backend verifies signature.
+- Internal `users.id` (UUID) is the primary identity, decoupled from any specific wallet address.
+- The signed wallet is recorded in `auth_wallets` with `role = 'OWNER'` and `verified_at` timestamp.
+- **V1 enforces one auth wallet per user.** Schema permits multiple; application layer rejects additional rows in V1.
+- Session: short-lived JWT keyed on `users.id`.
 
-### 4.2 Wallet registration and multi-wallet support
+### 4.2 Account lifecycle and free trial
 
-- A user has one sign-in wallet and zero-or-more additional **monitored wallets**.
-- The sign-in wallet is automatically registered as a monitored wallet on first sign-in.
-- To register an additional monitored wallet, the user must **prove ownership** by signing a SIWE-style challenge from that wallet. This is enforced — V1 does not allow monitoring of wallets the user cannot sign for. Rationale: this positions ChainOps as a personal/treasury tool rather than a surveillance tool over arbitrary public addresses.
-- The system records the registration block height per wallet as that wallet's monitoring start point. Activity before registration is not indexed.
-- **Free tier:** 1 monitored wallet (the sign-in wallet).
-- **Premium tier:** up to 5 monitored wallets (sign-in wallet + 4 additional).
+Account states (`users.account_status`):
 
-### 4.3 Forward-only transaction monitoring
+- `ACTIVE` — eligible for monitoring; subscription valid (paid or trial).
+- `EXPIRED` — subscription ended; grace window has not yet elapsed.
+- `DORMANT` — subscription ended, grace elapsed, account paused. Tracked wallets removed from global indexing if no other subscribers remain. Historical data retained.
+- `CANCELED` — user-initiated termination.
+- `DELETED` — user-initiated account removal.
 
-- Native ETH transfers (incoming or outgoing) involving any registered wallet are captured.
-- USDC (ERC-20 Transfer events) involving any registered wallet are captured. The Sepolia USDC contract address is configured statically.
-- **Any outgoing transaction** (i.e., where `from` is a monitored wallet) is also captured, regardless of whether it is a transfer. This is required to power gas-spending analytics (§4.8). The ledger records these as a separate event class with the gas cost attached.
-- Each captured event is persisted to the audit ledger with full provenance: tx hash, block number, block hash, from, to, amount (where applicable), gas used, effective gas price, event class, observed-at timestamp.
+Subscription states (`subscriptions.subscription_status`):
 
-### 4.4 Transaction state machine
+- `FREE_TRIAL` — within 20-day trial window.
+- `ACTIVE` — paid, within paid subscription window.
+- `EXPIRED` — past `expires_at`.
+- `CANCELED` — user explicitly canceled.
 
-Transactions move through explicit states:
+**Free trial:**
 
-- `seen` — observed in a block, < threshold confirmations
-- `confirmed` — ≥ 25 confirmations reached, treated as durable
-- `reverted` — was previously `seen`, now no longer present in the canonical chain (reorg)
+- Every new user receives a 20-day free trial activated automatically on first SIWE sign-in.
+- Trial users have 1 tracked wallet, real-time monitoring, basic feed.
+- Trial users do NOT have export, advanced analytics, or additional tracked wallets.
+- At trial expiry without payment: FREE_TRIAL → EXPIRED → (after grace) DORMANT.
 
-The confirmation threshold is configurable; **25 is the default**.
+**DORMANT → ACTIVE transition:**
 
-### 4.5 Real-time feed
+- User pays via on-chain subscription contract.
+- Backend reconciles `Subscribed` event to `user_id` via `auth_wallets`, transitions account to ACTIVE.
+- Tracked wallets re-registered in global indexing (`active_subscriber_count` incremented; `is_globally_active` flipped true if needed).
+- Real-time monitoring resumes from current chain head.
+- **No backfill of the dormant gap in V1.** UI displays: "Monitoring paused from [date] to [date]. Activity during this period is not available."
 
-- Dashboard shows new transactions as they arrive, with their current confirmation count and state.
+**Lifecycle enforcement:**
 
-### 4.6 Filtering, search, history view
+- Scheduled job (Spring `@Scheduled`, daily cadence) scans for expired subscriptions and transitions account states accordingly.
+- EXPIRED → DORMANT grace window: TBD (see Open Questions). Suggested default: 3 days.
 
-- Filter by wallet (when multi-wallet), token (ETH/USDC), direction (in/out), date range, state.
+### 4.3 Wallet tracking and multi-wallet support
+
+- A user has zero or more **tracked wallets** in `user_tracked_wallets`. These are *separate* from `auth_wallets`.
+- The sign-in wallet is auto-registered as the user's first tracked wallet on first sign-in.
+- Additional tracked wallets require ownership proof: a SIWE-style signature from that wallet.
+- **Free / trial tier:** 1 tracked wallet.
+- **Premium tier:** up to 5 tracked wallets.
+- Wallet operations: add, remove (soft delete via `is_removed`), pause, resume.
+- Removing or pausing decrements `indexed_wallets.active_subscriber_count`; if count reaches zero, `is_globally_active` is set false and the scanner stops scanning that wallet.
+
+### 4.4 Forward-only transaction monitoring
+
+For each globally-active wallet, the listener captures:
+
+- Native ETH transfers (incoming or outgoing).
+- USDC (ERC-20 Transfer) events involving the wallet.
+- All outgoing transactions from the wallet, regardless of type (to support gas analytics — see §4.10).
+
+Each event is persisted to `wallet_activities` with full provenance: tx hash, block number, block hash, asset deployment, raw amount, event type, direction, counterparty address, gas data, observed-at timestamp, state, confirmation count.
+
+"Forward-only" means: nothing before a wallet's `monitoring_started_at` is indexed in V1.
+
+### 4.5 Global indexing layer
+
+The architectural pattern that makes the platform efficient when multiple users monitor the same wallet.
+
+- `indexed_wallets` is the listener's source of truth for which wallets to scan. Primary key: `(wallet_address, network_id)`.
+- Each row carries `active_subscriber_count` (denormalized) and `is_globally_active` (cached for scan filtering).
+- Adding a wallet to `user_tracked_wallets` **transactionally** upserts `indexed_wallets` and increments the count.
+- Removing / pausing a tracked wallet decrements the count; on zero, `is_globally_active` flips false.
+- The listener scans only wallets where `is_globally_active = TRUE`.
+- `wallet_activities` rows are shared at read time: API queries join `user_tracked_wallets` to `wallet_activities` on `(wallet_address, network_id)`.
+- Result: if 50 users track `0xabc`, the chain is scanned for `0xabc` exactly once. Activity events are stored once and fanned out at read time.
+
+**Concurrency note:** the `active_subscriber_count` increment/decrement MUST occur in the same DB transaction as the `user_tracked_wallets` insert/update. Otherwise concurrent add/remove operations can leak the count.
+
+### 4.6 Transaction state machine
+
+`wallet_activities.state`:
+
+- `seen` — observed in a block, below confirmation threshold.
+- `confirmed` — ≥ threshold confirmations reached, treated as durable.
+- `reverted` — was previously `seen`; reorg detected, no longer in canonical chain.
+
+Confirmation threshold is per-network (config). Sepolia default: **25**.
+
+### 4.7 Real-time feed
+
+- Dashboard surfaces new activities with current state and confirmation count.
+
+### 4.8 Filtering, search, history view
+
+- Filter by tracked wallet, asset, direction (in/out), date range, state.
 - Search by counterparty address or tx hash.
 
-### 4.7 Export (premium)
+### 4.9 Export (premium)
 
-- CSV and XLSX export of filtered transaction history.
-- Gated by active subscription.
+- CSV and XLSX export of filtered activity. Synchronous execution inside the API thread; reporting is a module within `ledger-api-java`.
+- Gated by active **paid** subscription. Trial users do not have export.
 
-### 4.8 Advanced analytics (premium)
+### 4.10 Advanced analytics (premium)
 
-All gated by active subscription. All views are computed by aggregation over the audit ledger.
+All gated by active paid subscription. Computed by live SQL aggregation over `wallet_activities` in V1; pre-computed roll-ups are a V2 optimization.
 
-- **Transaction trends.** Daily, weekly, and monthly counts of transactions across the user's monitored wallets, with breakdowns by direction.
-- **Monthly inflow/outflow.** Per-month aggregate value flowing into and out of the user's monitored wallets, broken down by token.
-- **Token usage breakdown.** Share of activity across tokens (ETH vs USDC in V1). Acknowledged as a thin view at the V1 two-token scope; designed to scale meaningfully when additional tokens are added in V2+.
-- **Gas spending analytics.** Total ETH spent on transaction fees across all outgoing transactions from the user's monitored wallets, broken down by month and by destination contract / counterparty. Requires the listener to capture all outgoing txs from monitored wallets (see §4.3).
+- **Transaction trends.** Daily, weekly, monthly counts across tracked wallets, broken down by direction.
+- **Monthly inflow/outflow.** Per-month aggregate value flowing in and out, broken down by asset.
+- **Token usage breakdown.** Share of activity across assets (ETH vs USDC in V1; scales as more `asset_deployments` are added).
+- **Gas spending analytics.** Total ETH spent on gas across outgoing transactions, broken down by month and counterparty.
 
-**Aggregation strategy for V1:** live SQL queries against the ledger, executed on request. Materialized views and pre-computed roll-ups are an explicit V2+ optimization, deferred until volume warrants them.
+### 4.11 Premium gate via on-chain subscription
 
-### 4.9 Premium gate via on-chain subscription
+- Single Solidity contract deployed on Sepolia (one contract per supported network in V2+).
+- **Price:** 30 test-USDC. **Duration:** 30 days.
+- ERC-20 two-tx flow: `USDC.approve(contract, 30e6)` then `contract.subscribe()`.
+- Re-subscription extends rather than resets: `expiry = max(block.timestamp, currentExpiry) + 30 days`.
+- Contract emits `Subscribed(address indexed user, uint256 newExpiry, uint256 amountPaid)`.
+- **Payment must originate from the user's sign-in wallet.** Backend reconciles `msg.sender` to a user via `auth_wallets`. Payments from non-auth-wallets are ignored.
+- Backend listens for `Subscribed` events (and/or queries on-chain state) to maintain premium access in `subscriptions`.
+- On expiry: ACTIVE → EXPIRED → DORMANT per lifecycle (§4.2). Premium features lock; historical data retained.
 
-- A single Solidity contract deployed on Sepolia. One subscription tier only.
-- **Price:** 30 test-USDC. **Duration:** 30 days per subscription. Both are contract constants, not user-configurable.
-- Users call `subscribe()` which pulls 30 test-USDC via ERC-20 `transferFrom` (requires prior `approve` call by the user — two-tx flow accepted as the standard ERC-20 baseline).
-- **Re-subscription extends, not resets.** If a user re-subscribes while still active, the new 30 days are added to their existing expiry. Implementation: `expiry = max(block.timestamp, currentExpiry) + 30 days`.
-- **Subscription payment must originate from the user's sign-in wallet.** The contract emits `Subscribed(msg.sender, newExpiry, amountPaid)`; the backend maps `msg.sender` to a user via the sign-in-wallet record. If the paying wallet is not anyone's sign-in wallet, the event is ignored.
-- ChainOps backend listens for `Subscribed` events (or queries on-chain state) to determine premium access.
-- **On subscription expiry (soft-revoke):** premium-gated features (export, analytics, additional wallets) become inaccessible, but historical data is retained and the listener continues to index all previously-registered wallets. The user can re-subscribe to instantly restore access. No grace period, no deletion. Rationale: cheapest to build, kindest to the user, easiest to upgrade to harder revocation later.
-- **Premium gates in V1:** multi-wallet (beyond 1), export (§4.7), advanced analytics (§4.8).
-- **Pricing note:** on Sepolia, test-USDC has no economic value. The contract is a demonstration of subscription mechanics, not a revenue mechanism. A real-economy version would belong on mainnet or an L2 with proper pricing logic — out of scope.
+### 4.12 Operational dashboard
 
-### 4.10 Operational dashboard
-
-- Listener checkpoint (last block processed)
-- Listener lag (chain head height − checkpoint)
+- Listener checkpoint per network (`global_last_scanned_block`)
+- Listener lag (chain head − checkpoint), per network
 - RPC error rate, retry counts, provider fallback events
 - Queue depth (RabbitMQ)
 - Reorg event count
 - DB write throughput
 - API request latency / error rate
-- Active subscriptions count
+- Active subscriptions count, trial conversion rate
+- Globally-active wallet count, average subscribers per wallet
+- Lifecycle transition counts per state pair
 
 ---
 
@@ -136,195 +192,251 @@ All gated by active subscription. All views are computed by aggregation over the
 
 ### 5.1 Services
 
-| Service           | Language           | Responsibility                                                                                                                                                                                                                                                                                                                                                                                     |
-| ----------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `listener-go`     | Go                 | Polls Sepolia RPC every 60s, advances from last checkpoint to chain head, extracts ETH and USDC events plus all outgoing txs for registered wallets, emits to MQ, persists checkpoint.                                                                                                                                                                                                             |
-| `ledger-api-java` | Java / Spring Boot | Owns the audit ledger and user/auth model. Consumes events from MQ. Serves REST APIs to the frontend. Handles SIWE nonce issuance and signature verification. Enforces transaction state machine and reorg handling. Listens for `Subscribed` events from the on-chain contract to maintain premium-access state. **Reporting/export is a module within this service**, not a separate deployment. |
-| `smart-contracts` | Solidity / Foundry | Subscription contract deployed on Sepolia. Verified on Etherscan.                                                                                                                                                                                                                                                                                                                                  |
-| `frontend`        | React              | Dashboard, feed, filters, export trigger, wallet connection.                                                                                                                                                                                                                                                                                                                                       |
+| Service | Language | Responsibility |
+|---|---|---|
+| `listener-go` | Go | Network-agnostic; per-instance configured with one network's RPC and asset addresses. Polls RPC every 60s. Reads `indexed_wallets` for globally-active wallets to scan. Advances from `global_last_scanned_block` to chain head. Captures ETH transfers, USDC transfers, and all outgoing txs for tracked wallets. Emits to MQ. Persists per-network scan progress. Detects reorgs. |
+| `ledger-api-java` | Java / Spring Boot | Owns audit ledger, user/auth model, subscription state, lifecycle scheduled jobs, reporting/export module. SIWE nonce + signature verification. Consumes events from MQ. Listens for `Subscribed` events from on-chain contract. Serves REST APIs. |
+| `smart-contracts` | Solidity / Foundry | One subscription contract per network. V1 deploys one on Sepolia. |
+| `frontend` | React | Dashboard, feed, lifecycle UI (trial countdown, dormant notice), wallet connect (SIWE), subscription flow (approve + subscribe), filters, export trigger. |
 
-**Reporting module note:** Export runs synchronously inside the API thread for V1. If export latency exceeds ~2 seconds or memory pressure is observed, the upgrade path is to extract the module into a separate service with async job semantics (job ID returned, file generated in background, download endpoint exposed). Document this trigger condition in service runbook.
+**Reporting / export** is a module inside `ledger-api-java`, not a separate service. Synchronous in V1. Extraction trigger: latency > 2s or memory pressure observed.
 
-### 5.2 Data flow (happy path)
+### 5.2 Real-time data flow
 
 ```
-Sepolia RPC ── poll ──> listener-go ── emit ──> RabbitMQ
-                            │                       │
-                       checkpoint                   ▼
-                          (PG)               ledger-api-java
-                                                    │
-                                                    ▼
-                                            audit ledger (PG)
-                                                    │
-                                                    ▼
-                                            React frontend
+Sepolia RPC ── poll ──> listener-go ── per-wallet events ──> RabbitMQ
+                            │                                    │
+                       per-network                                ▼
+                        checkpoint                       ledger-api-java
+                          (PG)                                  │
+                                                                ▼
+                                                        wallet_activities (PG)
+                                                                │
+                                                          fan-out via
+                                                       user_tracked_wallets
+                                                                │
+                                                                ▼
+                                                       React frontend
 ```
 
-### 5.3 Infrastructure choices and rationale
+### 5.3 Subscription event path
 
-**RabbitMQ over Kafka.** The durable source of truth is the blockchain itself plus the listener's persisted checkpoint. If a downstream consumer crashes, the listener can re-emit from chain history; we do not need Kafka's log-replay semantics. RabbitMQ is operationally simpler, has a usable free managed tier (CloudAMQP), and fits the throughput profile of an MVP. **Revisit if** event volume meaningfully exceeds 100/sec, or if a new consumer needs to replay historical events without re-reading the chain.
+```
+User → USDC.approve()  →  subscriptionContract.subscribe()
+                                       │
+                                       ▼
+                              Subscribed event emitted
+                                       │
+                       listener-go (or dedicated subscription listener)
+                                       │
+                                       ▼
+                                   RabbitMQ
+                                       │
+                                       ▼
+                            ledger-api-java consumes
+                                       │
+                  reconciles msg.sender → users.id via auth_wallets
+                                       │
+                                       ▼
+                  subscriptions row upserted
+                  account_status → ACTIVE
+                  re-activate tracked wallets in indexed_wallets
+```
 
-**PostgreSQL for the ledger.** Strong consistency, mature tooling, fits the audit-grade requirement, easy to run locally and in managed form (Supabase / Neon free tiers).
+### 5.4 Infrastructure choices and rationale
 
-**In-memory caching only in V1.** No Redis. Defer cache layer until there is measured read pressure on an actual hot path. Premature caching is premature complexity.
+**RabbitMQ over Kafka.** Source of truth is the chain plus per-network checkpoints; no need for log replay. RabbitMQ is simpler operationally, has a free managed tier (CloudAMQP) if VPS resources are pressured.
 
-**Polling-based listener (60s) rather than WebSocket subscriptions.** Polling is operationally simpler — no reconnect logic, no dropped-message handling, no stateful subscription to manage across restarts. The listener's contract is "advance from `last_processed_block + 1` to current head on every tick," which makes restarts and catch-up trivial.
+**PostgreSQL** for ledger and identity. Strong consistency, mature tooling, single database serves both real-time writes and analytics aggregations at V1 scale.
 
-**25-confirmation finality threshold.** Conservative default consistent with industry practice for non-trivial value transfers on Ethereum. Configurable per deployment.
+**Polling listener (60s).** Operationally simpler than WebSocket; checkpoint-based catch-up after restarts; well-suited to per-block batch processing.
 
-**Polyglot service split (Go listener + Java API).** Go is well-suited to I/O-bound RPC polling and concurrent fan-out via goroutines/channels. Spring Boot offers mature ergonomics for the business-logic and audit layer (validation, transactional boundaries, REST conventions, observability integrations). The split is deliberate — it's there to demonstrate sensible polyglot service composition, not because it's required by throughput.
+**Polyglot service split.** Go for I/O-bound RPC polling and concurrent fan-out. Spring Boot for business logic, lifecycle scheduling, transactional boundaries, and REST.
+
+**Network-agnostic listener code.** A single Go binary takes its network configuration (RPC URL, chain ID, USDC contract address, native asset symbol, confirmation threshold) from env vars / config file. V1 deploys exactly one instance pointed at Sepolia. V2 adds chains by spinning up additional instances configured for those chains. No code change required — only new rows in `networks` and `asset_deployments`, deploying the subscription contract on the new chain, and starting a new listener instance.
 
 ---
 
-## 6. Reliability and Observability Requirements
+## 6. Data Model
 
-### 6.1 Listener guarantees
+The full schema is at `docs/schema/ChainOps_Schema.sql`. Summary:
 
-- **Resumable on restart.** Listener persists `last_processed_block` after every successful block batch. On boot, it resumes from `last_processed_block + 1`.
-- **Idempotent emission.** Re-emitting an event already seen by the ledger must not produce a duplicate ledger row. Idempotency key: `(tx_hash, log_index)` for ERC-20 events; `tx_hash` for native transfers.
-- **Reorg-aware.** When the listener observes that a previously-emitted block is no longer in the canonical chain, it emits a corresponding `reverted` signal so the ledger can transition affected rows.
+| Table | Purpose |
+|---|---|
+| `users` | Internal identity (UUID). Holds `account_status`, `current_plan`. |
+| `auth_wallets` | Wallets allowed to sign in via SIWE. V1: exactly one per user (enforced in app layer). |
+| `user_tracked_wallets` | Wallets a user has registered for monitoring. V1: 1 (free/trial) or 5 (premium). |
+| `networks` | Supported chains. V1 seed: Sepolia. |
+| `assets` | Asset definitions (ETH, USDC). |
+| `asset_deployments` | (asset × network) → contract address + decimals. V1 seed: ETH/Sepolia (native), USDC/Sepolia. |
+| `indexed_wallets` | Global listener state. PK: `(wallet_address, network_id)`. Holds `active_subscriber_count`, `is_globally_active`, `global_last_scanned_block`. |
+| `wallet_activities` | Audit ledger. Stores observed on-chain events with state, confirmations, block hash, direction, counterparty, gas data. |
+| `subscriptions` | Cached projection of on-chain subscription state. On-chain contract is source of truth. |
+| `plan_features` | Capability flags per plan. V1: one row (`PREMIUM`). |
 
-### 6.2 RPC resilience
+### 6.1 Schema-level requirements (V1 blockers)
 
-- Exponential backoff on transient RPC failures.
-- Configurable max-retries per RPC call.
-- Per-call timeout (e.g., 10s).
-- If a primary RPC endpoint fails repeatedly, fall through to a configured secondary (e.g., Alchemy → Infura). **Multi-provider fallback is an MVP feature**, not a stretch goal — single-provider dependency is an unacceptable operational risk even for a demo.
+These fixes to the current draft schema must be applied before any service code is written:
 
-### 6.3 Metrics (Prometheus)
+- **`wallet_activities` is missing critical columns.** Add: `state` (seen/confirmed/reverted), `confirmation_count`, `block_hash`, `direction` (in/out), `counterparty_address`, `gas_used`, `effective_gas_price`. Untyped `metadata JSONB` is not a substitute for queryable columns the analytics views depend on.
+- **`wallet_activities.amount`** should be `NUMERIC(78, 0)` to hold full uint256 raw on-chain values. Decimals are applied at read time via `asset_deployments.decimals`. Never mix display amounts and raw amounts in the same column.
+- **`indexed_wallets` primary key** must be `(wallet_address, network_id)`, not `wallet_address` alone. The same wallet on different chains is a different row.
+- **Indexes required:** `wallet_activities (wallet_address, network_id, occurred_at DESC)`, `wallet_activities (tx_hash)` for dedup, `user_tracked_wallets (user_id) WHERE is_removed = FALSE`.
+- **`users.primary_wallet_address`** is redundant with `auth_wallets WHERE role='OWNER'`. Drop it; use `auth_wallets` as the source of truth.
+- **`subscriptions`** needs a constraint preventing multiple `ACTIVE` rows per user — partial unique index on `(user_id) WHERE subscription_status = 'ACTIVE'`. Or refactor to one row per user with a state column.
+- **`user_tracked_wallets.UNIQUE(user_id, wallet_address)`** should be partial: `WHERE is_removed = FALSE`. Otherwise a user cannot re-add a previously-removed wallet.
+- **Address and tx_hash columns:** size to EVM exactly (`VARCHAR(42)` and `VARCHAR(66)`) or store as `BYTEA`. The current `VARCHAR(100)` / `VARCHAR(255)` is wasteful and signals non-EVM intent we don't have.
+- **`backfill_jobs` table:** remove from V1 schema entirely. Add in V2 alongside the backfill worker. Adding a table later is a pure forward-compatible migration.
 
-- `chainops_listener_last_processed_block`
-- `chainops_listener_chain_head_lag_blocks`
-- `chainops_listener_rpc_errors_total{provider, method}`
-- `chainops_listener_blocks_processed_total`
-- `chainops_listener_reorgs_observed_total`
+---
+
+## 7. Reliability and Observability Requirements
+
+### 7.1 Listener guarantees
+
+- **Resumable on restart.** Per-(wallet, network), `global_last_scanned_block` is persisted after every successful block batch. Listener resumes from `last + 1`.
+- **Idempotent emission.** Re-emitting a previously-seen event must not produce a duplicate `wallet_activities` row. Dedup key: `(tx_hash, wallet_address, network_id)` for native transfers; `(tx_hash, log_index, wallet_address, network_id)` for ERC-20 events.
+- **Reorg-aware.** Listener tracks a configurable window of recent block hashes. When a previously-emitted block is no longer canonical, it emits a reorg signal; the ledger transitions affected rows to `reverted`.
+
+### 7.2 RPC resilience
+
+- Exponential backoff on transient failures.
+- Configurable max retries, per-call timeout (10s default).
+- Multi-provider fallback (Alchemy primary, Infura secondary). Single-provider dependency is unacceptable even for the demo.
+
+### 7.3 Metrics (Prometheus)
+
+- `chainops_listener_last_processed_block{network}`
+- `chainops_listener_chain_head_lag_blocks{network}`
+- `chainops_listener_rpc_errors_total{network,provider,method}`
+- `chainops_listener_blocks_processed_total{network}`
+- `chainops_listener_reorgs_observed_total{network}`
+- `chainops_listener_globally_active_wallets{network}`
 - `chainops_mq_publish_errors_total`
 - `chainops_mq_queue_depth{queue}`
-- `chainops_ledger_writes_total{state}`
+- `chainops_ledger_writes_total{event_type,state}`
 - `chainops_api_request_duration_seconds{route}`
+- `chainops_active_subscriptions`
+- `chainops_lifecycle_transitions_total{from_state,to_state}`
 
-### 6.4 Logging
+### 7.4 Logging
 
-- Structured (JSON) logs across all services.
-- Correlation IDs propagated from API request → ledger → (where applicable) listener context.
-
----
-
-## 7. Deployment Plan
-
-| Component                                     | Hosting                                                                                             |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Frontend (React)                              | Vercel                                                                                              |
-| `listener-go`                                 | Single VPS via docker-compose                                                                       |
-| `ledger-api-java` (includes reporting module) | Single VPS via docker-compose                                                                       |
-| PostgreSQL                                    | Single VPS via docker-compose (managed Supabase/Neon as fallback if VPS resource pressure observed) |
-| RabbitMQ                                      | Single VPS via docker-compose                                                                       |
-| Prometheus + Grafana                          | Single VPS via docker-compose                                                                       |
-| Sepolia RPC                                   | Alchemy free tier (primary) + Infura free tier (secondary fallback) — external                      |
-
-**VPS sizing target:** 4GB RAM, 2 vCPU minimum. Recommendation: Hetzner CX22 (≈€4-5/month) as the boring correct choice. The full stack (Postgres + RabbitMQ + Spring Boot + Go listener + Prometheus + Grafana) does not fit comfortably on a 1-2GB box — Spring Boot alone can consume ~500MB of heap.
-
-**Operational tradeoff (accepted):** single VPS means single point of failure and no high availability. If the box crashes the entire system is down until it recovers. This is acceptable for a portfolio MVP; documented here so it is not mistaken for an oversight.
-
-**Local development** is via the same `docker-compose.yml` used in production. Local and prod environments differ only in environment variables (RPC endpoints, secrets, DB credentials). This deliberate symmetry is the operational simplicity that justified choosing single-VPS over a managed PaaS.
-
-**Kubernetes manifests** live under `infra/kubernetes/` as a documented production-deployment artifact, but the live demo does not run on K8s. This separation is intentional: the manifests demonstrate the deployment architecture; docker-compose runs the demo without the operational overhead.
+- Structured JSON across all services.
+- Correlation IDs propagated where applicable.
 
 ---
 
-## 8. Smart Contract — Minimal V1 Design
+## 8. Deployment Plan
 
-The V1 subscription contract is intentionally one of the smallest contracts that can serve a real product purpose.
+| Component | Hosting |
+|---|---|
+| Frontend (React) | Vercel |
+| `listener-go` (one Sepolia instance) | Single VPS via docker-compose |
+| `ledger-api-java` | Single VPS via docker-compose |
+| PostgreSQL | Single VPS via docker-compose |
+| RabbitMQ | Single VPS via docker-compose |
+| Prometheus + Grafana | Single VPS via docker-compose |
+| Sepolia RPC | Alchemy free tier (primary) + Infura free tier (fallback) — external |
+
+**VPS sizing:** 4GB RAM, 2 vCPU minimum (Hetzner CX22 recommended).
+
+**Operational tradeoff:** single VPS = SPOF. Acceptable for portfolio demo on testnet. Risk profile is low because Sepolia carries no real-money obligations.
+
+**Local development** uses the same `docker-compose.yml` as production. Differences are environment variables only.
+
+**Kubernetes manifests** under `infra/kubernetes/` are a documented production-deployment artifact, not the runtime substrate for the live demo.
+
+---
+
+## 9. Smart Contract — V1 Design (Sepolia)
 
 **Parameters (locked):**
 
-- `paymentToken`: Sepolia test-USDC contract address (static constant)
-- `SUBSCRIPTION_PRICE`: 30 USDC (30 \* 10^6, accounting for USDC's 6 decimals)
-- `SUBSCRIPTION_DURATION`: 30 days (Solidity native `30 days` literal)
-- Single tier — no plan upgrades, no proration
+- `paymentToken`: Sepolia test-USDC contract address.
+- `SUBSCRIPTION_PRICE`: 30 USDC (30 * 10^6 accounting for USDC's 6 decimals).
+- `SUBSCRIPTION_DURATION`: 30 days (Solidity native literal).
+- Single tier.
 
 **Behaviour:**
 
-- A user first calls `USDC.approve(subscriptionContract, 30 * 10^6)` to authorize transfer (standard ERC-20 two-tx pattern, accepted UX cost for V1).
-- The user then calls `subscribe()` on the subscription contract. The contract pulls 30 USDC via `transferFrom(msg.sender, address(this), 30 * 10^6)` and updates the user's expiry: `subscriptionExpiry[msg.sender] = max(block.timestamp, subscriptionExpiry[msg.sender]) + 30 days`.
-- The contract emits `Subscribed(address indexed user, uint256 newExpiry, uint256 amountPaid)`.
-- The backend listens for `Subscribed` events and reconciles them against known sign-in wallets to grant premium access at the account level.
-- **Payment must originate from the user's sign-in wallet.** Subscriptions paid from any other address are unattributable in V1 and are ignored by the backend.
-- No keeper. No automatic renewal. When the access window expires, the user re-subscribes manually (soft-revoke; see §4.9).
+- User calls `USDC.approve(contract, 30 * 10^6)` then `contract.subscribe()`.
+- Contract pulls USDC via `transferFrom`, updates `subscriptionExpiry[msg.sender] = max(block.timestamp, currentExpiry) + 30 days`.
+- Emits `Subscribed(address indexed user, uint256 newExpiry, uint256 amountPaid)`.
+- Owner-only `withdraw()` via OpenZeppelin `Ownable`.
+- Immutable. No proxy, no pausability.
+- Checks-Effects-Interactions pattern for reentrancy safety.
 
-**Contract design constraints:**
+**Per-chain consideration:** when V2 deploys to Arbitrum/Base/etc., a new contract instance is deployed on that chain with that chain's USDC address. Backend maps `(network_id, contract_address)` → subscription deployment.
 
-- **Immutable.** No proxy, no upgradeability. If logic changes, deploy a new contract address and migrate.
-- **No pausability.** Adds complexity without clear V1 benefit. If a bug is found, deploy a replacement.
-- **Owner-only `withdraw()`.** Collected USDC can be withdrawn by the contract owner. Use OpenZeppelin `Ownable`. Owner = deployer wallet for V1.
-- **Checks-Effects-Interactions pattern** for reentrancy safety, even though USDC is a known-good token. Cheap discipline.
-
-**Out of scope for the V1 contract:** refunds, plan upgrades, beneficiary parameter, gasless approvals via `permit()`, streaming payments, NFT-bound subscriptions.
+**Out of scope for V1 contract:** refunds, plan upgrades, beneficiary parameter, `permit()` gasless approvals, streaming payments, NFT-bound subscriptions.
 
 ---
 
-## 9. Resolved Decisions (log)
+## 10. Resolved Decisions (log)
 
-For auditability and to prevent silent drift, decisions that have been made and locked are recorded here.
-
-- **2026-05-23 — Authentication model:** SIWE-only. No email / OAuth. Sign-in wallet doubles as account identity (mapped via UUID `user_id` internally).
-- **2026-05-23 — Premium gates:** multi-wallet (beyond 1), export, and four named advanced analytics views (transaction trends, monthly inflow/outflow, token usage breakdown, gas spending).
-- **2026-05-23 — Subscription payment constraint:** must originate from the user's sign-in wallet. Payments from other addresses are ignored.
-- **2026-05-23 — Multi-wallet ownership proof:** required. Adding a monitored wallet beyond the sign-in wallet requires a SIWE-style signature from that wallet.
-- **2026-05-23 — Listener scope expansion:** listener captures all outgoing transactions from monitored wallets (not just ETH/USDC transfers) to support gas analytics.
-- **2026-05-23 — Subscription parameters:** 30 test-USDC for 30 days, single tier, 5-wallet premium limit (1 for free).
-- **2026-05-23 — Subscription contract design:** ERC-20 approve+transferFrom two-tx flow; re-subscription extends rather than resets expiry; immutable contract (no proxy, no pausability); owner-only `withdraw()` via OpenZeppelin `Ownable`; CEI pattern for reentrancy safety.
-- **2026-05-23 — Subscription expiry behaviour:** soft-revoke (premium features lock, indexing continues, no data deletion, no grace period).
-- **2026-05-23 — Backend hosting:** single VPS (target 4GB RAM, Hetzner CX22 recommended), docker-compose for runtime. K8s manifests are a separate portfolio artifact, not the live deployment substrate.
-- **2026-05-23 — Reporting:** module within `ledger-api-java`, synchronous export inside the API thread. Extraction trigger: export latency > ~2s or observed memory pressure.
-
-## 10. Open Questions
-
-These are decisions deliberately left unresolved. They must be answered before the relevant component is implemented.
-
-1. **Audit ledger schema.** Single `events` table with type discriminator (transfer-eth / transfer-usdc / outgoing-tx) vs per-class tables. Tradeoffs around query shape, analytics aggregation cost, and future multi-token support.
-2. **Reorg handling depth.** Maximum reorg depth the listener tracks. Sepolia is generally stable but the listener still needs a defined window of recent block hashes for comparison.
-3. **Notification channel in V1.** In-app feed only is the default; revisit whether a polled "unread" count is sufficient or whether SSE/WebSocket push to the frontend is needed.
-4. **Listener → ledger reorg signal contract.** Message shape for reorg events: how does the listener tell the ledger "this previously-emitted block is no longer canonical"?
-5. **SIWE session lifetime and refresh.** JWT TTL, refresh strategy, revocation on wallet-disconnect.
-6. **Subscription event reconciliation lag.** What is the acceptable latency between a `Subscribed` event landing on-chain and the backend granting premium access? Directly tied to the listener's polling cadence and event-fan-out path.
+- **2026-05-23 — Authentication model:** SIWE-only. UUID `user_id` as primary internal identity.
+- **2026-05-23 — Premium gates:** multi-wallet, export, four named analytics views.
+- **2026-05-23 — Subscription payment constraint:** must originate from sign-in wallet.
+- **2026-05-23 — Multi-wallet ownership proof:** required.
+- **2026-05-23 — Listener scope expansion:** captures all outgoing txs from monitored wallets.
+- **2026-05-23 — Subscription parameters:** 30 test-USDC for 30 days, single tier, 5-wallet premium / 1-wallet free.
+- **2026-05-23 — Subscription contract design:** ERC-20 approve+transferFrom; expiry stacking; immutable; owner withdraw; CEI.
+- **2026-05-23 — Backend hosting:** single VPS, docker-compose. K8s as separate artifact.
+- **2026-05-23 — Reporting:** module within `ledger-api-java`, synchronous.
+- **2026-05-24 — V1 product scope expanded** to include account lifecycle (FREE_TRIAL → ACTIVE → EXPIRED → DORMANT → CANCELED → DELETED), 20-day free trial, global indexing layer with `active_subscriber_count` fan-out, `auth_wallets` ↔ `user_tracked_wallets` separation, and `plan_features` table (one row in V1).
+- **2026-05-24 — Multi-chain shape:** schema is multi-chain (`networks`, `assets`, `asset_deployments`); listener code is network-agnostic via config; V1 deploys exactly one listener instance against Sepolia. V2 adds chains via config + new contract deployments; no code changes.
+- **2026-05-24 — One auth wallet per user in V1.** Schema permits N rows for V2.
+- **2026-05-24 — Backfill cut entirely from V1.** DORMANT users (trial or paid) accept the data gap on reactivation. UI displays gap notification. Backfill is V2.
+- **2026-05-24 — DORMANT lifecycle enforced** by a scheduled job (daily cadence). EXPIRED → DORMANT grace window pending (Open Question).
 
 ---
 
-## 11. Out of Scope — Roadmap (V2+)
+## 11. Open Questions
 
-These features were considered for V1 and deferred. They are listed here so that V1 architectural decisions do not foreclose them.
+1. **Audit ledger schema final shape.** Apply §6.1 fixes; finalize column set on `wallet_activities` before writing the listener emitter or the ledger writer.
+2. **Reorg handling depth.** Maximum reorg depth tracked per network. Window of recent block hashes the listener keeps in memory / persists.
+3. **Listener → ledger reorg signal contract.** Message shape for "this previously-emitted block is no longer canonical."
+4. **SIWE session lifetime and refresh.** JWT TTL, refresh strategy, revocation on wallet-disconnect.
+5. **Subscription event reconciliation lag.** Acceptable latency between `Subscribed` event landing on-chain and backend granting premium access. UX implication: "I paid, why am I not premium yet?"
+6. **EXPIRED → DORMANT grace window.** Suggested default: 3 days. Confirm.
+7. **Notification surface for state transitions.** In-app feed confirms via dashboard; revisit whether trial-expiry needs proactive prompting in UI.
+8. **Concurrency model for `active_subscriber_count` updates.** DB transaction wrapping add/remove + count update is the V1 plan; confirm whether row-level locking is sufficient or optimistic-concurrency retries are needed.
 
-- **Historical backfill** for newly registered wallets, powered by a third-party indexer (Alchemy/Etherscan). Architecturally this requires a separate backfill service with its own RPC budget and rate-limit-aware scheduling, isolated from the real-time listener.
-- **Recurring subscription** via allowance-based monthly charges and an off-chain keeper service.
-- **Multi-chain support** (Polygon, Arbitrum, Base).
-- **Mainnet support**, including pricing in real USD and proper finality thresholds per chain.
-- **Email/webhook notifications** for transaction events.
-- **API access** for third-party integrations.
+---
+
+## 12. Out of Scope — Roadmap (V2+)
+
+- **Historical backfill** for paid users on DORMANT → ACTIVE transition, via `backfill_jobs` worker queue and rate-limit-aware RPC scheduling.
+- **Live multi-chain runtime:** additional listener instances deployed for Arbitrum, Base, Optimism, Ethereum mainnet.
+- **Mainnet deployment** with audit, real-money pricing economics, regulatory review, SRE story.
+- **Recurring subscription** via allowance-based monthly charges and off-chain keeper.
 - **Multi-token support** beyond ETH/USDC (USDT, DAI, WBTC, custom ERC-20s).
-- **Streaming-payment subscriptions** (Superfluid-style) as an alternative to one-shot purchases.
-- **Mempool monitoring** for sub-block-time visibility on pending transactions.
-- **User-provided API key vault** for advanced users who want to plug in their own Alchemy/Infura keys.
-- **Email or OAuth authentication** as an alternative or supplement to SIWE.
-- **Subscription paid from a non-sign-in wallet**, via either a `beneficiary` parameter on the contract or an off-chain wallet-linking flow.
-- **Pre-computed analytics roll-ups** (materialized views or scheduled aggregation jobs) for performance when ledger size and query volume grow.
-- **Account recovery flow** (e.g., social recovery, multi-sig owned account).
+- **Email / webhook / Telegram alerts** as notification channels.
+- **API access** for third-party integrations.
+- **Multiple auth wallets per user** (backup wallet, hardware + hot wallet).
+- **Team accounts / multi-tenant organizations.**
+- **Mempool monitoring** for pending-tx visibility.
+- **User-provided API key vault.**
+- **Streaming-payment subscriptions** (Superfluid-style).
+- **Pre-computed analytics roll-ups** (materialized views, scheduled aggregation).
+- **Account recovery flow** (social recovery, multi-sig owned account).
+- **`PAST_DUE` subscription status** when recurring billing is introduced.
 
 ---
 
-## 12. Definition of Done for V1
+## 13. Definition of Done for V1
 
-V1 is considered done when:
-
-1. A user can sign in to the deployed frontend via SIWE using a Sepolia wallet.
-2. The sign-in wallet is auto-registered as a monitored wallet; a free-tier user can register no additional wallets.
-3. A test ETH transfer to a monitored wallet appears in the user's feed within 90 seconds of being mined.
-4. A test USDC transfer to a monitored wallet appears in the user's feed within 90 seconds of being mined.
-5. The transaction's confirmation count visibly progresses and reaches the `confirmed` state at 25 confirmations.
-6. A simulated reorg (or an observed real one) results in the affected transaction transitioning to `reverted` without ledger corruption.
-7. The user can filter and search their wallet's history. Export is rejected for non-premium users with a clear message.
-8. A user can subscribe via the on-chain contract using their sign-in wallet, and within a documented latency window the backend grants premium access.
-9. A premium user can register up to N monitored wallets (each requiring ownership-proof signature) and access export plus all four advanced analytics views.
-10. Grafana shows all metrics listed in §6.3 with live data, including active subscription count.
-11. The full system can be brought up locally via `docker-compose up` from a clean clone.
-12. README explains the architecture, the deployment, the scope boundaries, and the reasoning behind the key technical decisions.
+1. A user can sign in via SIWE on Sepolia. Account is created, FREE_TRIAL activated, sign-in wallet auto-registered as tracked wallet.
+2. Within 90 seconds of a Sepolia ETH or USDC transfer involving a tracked wallet, the activity appears in the user's feed.
+3. Transactions transition `seen → confirmed` and a simulated reorg correctly produces `reverted`.
+4. Free / trial user can register at most 1 tracked wallet; attempts beyond this are rejected with a clear UI message and CTA to subscribe.
+5. Premium user can register up to 5 tracked wallets, each requiring an ownership-proof signature.
+6. Two users tracking the same wallet result in exactly one entry in `indexed_wallets` and one set of `wallet_activities` rows, fanned out to both at read time.
+7. Scheduled lifecycle job correctly transitions accounts: FREE_TRIAL → EXPIRED at trial expiry, EXPIRED → DORMANT after grace, ACTIVE → EXPIRED at subscription expiry.
+8. DORMANT user reactivating via on-chain subscription is transitioned to ACTIVE; their tracked wallets become globally active again; UI displays the gap notification.
+9. Subscription payment from the sign-in wallet is reconciled within the documented latency window.
+10. Premium-only features (export, advanced analytics, additional tracked wallets) are rejected for non-premium users with clear messages.
+11. Grafana shows all metrics in §7.3 with live data.
+12. Full system runs locally via `docker-compose up` from a clean clone.
+13. Listener can be reconfigured via env vars to point at a different EVM network without code changes (validated by running it against a second Sepolia RPC endpoint or a local Anvil instance).
+14. README explains the architecture, deployment, scope boundaries, and reasoning.
