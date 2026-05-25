@@ -6,6 +6,7 @@ import (
 	"listener/providers"
 	"math/big"
 	"net"
+	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -17,35 +18,48 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 	// Timer to fetch blocks every 1 minute and need one variable to hold the last block scanned.
 	var lastBlock *big.Int = big.NewInt(0)
 
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
 	// unlimited loop with reasonable sleep to avoid overwhelming the node
 	for {
 
-		for _, provider := range *providerList {
+		select {
+		case <-ctx.Done():
+			fmt.Println("Shutting down block listener...")
+			return
+		case <-ticker.C:
+			{
+				for _, provider := range *providerList {
 
-			if provider.Status == providers.Unhealthy {
-				fmt.Printf("Skipping unhealthy provider: %s\n", provider.Url)
-				continue
+					if provider.Status == providers.Unhealthy {
+						fmt.Printf("Skipping unhealthy provider: %s\n", provider.Url)
+						continue
+					}
+
+					client := provider.Client
+
+					blockToProcess, err := handleBlockProcess(ctx, client, lastBlock)
+					if err != nil {
+						fmt.Printf("Error processing block with provider %s: %v\n", provider.Url, err)
+						handleProviderFailure(&provider, err)
+						continue
+					}
+
+					// Process the block (placeholder for actual processing logic)
+					block, err := client.BlockByNumber(ctx, blockToProcess)
+					if err != nil {
+						fmt.Printf("Error fetching block %s with provider %s: %v\n", blockToProcess.String(), provider.Url, err)
+						handleProviderFailure(&provider, err)
+						continue
+					}
+
+					fmt.Printf("Successfully processed block %s with provider %s\n", blockToProcess.String(), provider.Url)
+					fmt.Printf("no. of transactions in block %s: %d\n", blockToProcess.String(), len(block.Transactions()))
+
+					break
+				}
 			}
-
-			client := provider.Client
-
-			blockToProcess, err := handleBlockProcess(ctx, client, lastBlock)
-			if err != nil {
-				fmt.Printf("Error processing block with provider %s: %v\n", provider.Url, err)
-				handleProviderFailure(&provider, err)
-				continue
-			}
-
-			// Process the block (placeholder for actual processing logic)
-			block, err := client.BlockByNumber(ctx, blockToProcess)
-			if err != nil {
-				fmt.Printf("Error fetching block %s with provider %s: %v\n", blockToProcess.String(), provider.Url, err)
-				handleProviderFailure(&provider, err)
-				continue
-			}
-
-			fmt.Printf("Successfully processed block %s with provider %s\n", blockToProcess.String(), provider.Url)
-			fmt.Printf("no. of transactions in block %s: %d\n", blockToProcess.String(), len(block.Transactions()))
 		}
 
 	}
