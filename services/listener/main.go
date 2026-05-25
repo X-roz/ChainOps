@@ -2,62 +2,35 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
-	"math/big"
 
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"listener/config"
+	"listener/providers"
+	"listener/service"
 )
 
 func main() {
 
-	fmt.Println("Starting Ethereum client listener...")
+	// Load configuration: default path is "application.yml", but can be overridden with the -config flag
+	configPath := flag.String("config", "application.yml", "path to config file")
+	flag.Parse()
 
-	// Connect to the Ethereum client
-	client, err := ethclient.Dial("https://0xrpc.io/sep")
+	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Println("Error connecting to Ethereum client:", err)
+		fmt.Println("Error loading config:", err)
 		return
 	}
 
-	networkId, err := client.NetworkID(context.Background())
+	fmt.Println("Loaded config for network:", cfg.Network)
+
+	// pass the RPC URLs to the providers package to establish connection
+	providerList, err := providers.Connect(&cfg.RPCURLs)
 	if err != nil {
-		fmt.Println("Error in fetching network Id :", err)
+		fmt.Println("Error connecting to providers:", err)
 		return
 	}
 
-	fmt.Println("Connected to Ethereum client with network ID:", networkId)
+	service.ListenToBlocks(context.Background(), &providerList)
 
-	blockNumber, err := client.BlockNumber(context.Background())
-	if err != nil {
-		fmt.Println("Error in fetching block number :", err)
-		return
-	}
-	fmt.Println("Current block number:", blockNumber)
-
-	bn := big.NewInt(int64(blockNumber))
-
-	block, err := client.BlockByNumber(context.Background(), bn)
-	if err != nil {
-		fmt.Println("Error in fetching block :", err)
-		return
-	}
-	fmt.Println("No. of Transactions:", len(block.Transactions()))
-
-	for _, tx := range block.Transactions() {
-
-		sender, err := types.Sender(types.LatestSignerForChainID(networkId), tx)
-		if err != nil {
-			fmt.Println("Error in fetching sender :", err)
-			return
-		}
-
-		to := "contract creation"
-		if tx.To() != nil {
-			to = tx.To().Hex()
-		}
-		fmt.Printf("Transaction Hash: %s, From: %s, To: %s, Value: %s\n", tx.Hash().Hex(), sender.Hex(), to, tx.Value().String())
-	}
-
-	client.Close()
 }
