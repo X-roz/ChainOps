@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"listener/providers"
+	"log/slog"
 	"math/big"
 	"net"
 	"sync"
@@ -28,18 +28,18 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("Shutting down block listener...")
+			slog.Info("shutting down block listener")
 			return
 		case <-ticker.C:
 			client, provider, ok := getHealthyClient(providerList)
 			if !ok {
-				fmt.Println("No healthy providers available, skipping tick")
+				slog.Warn("no healthy providers available, skipping tick")
 				continue
 			}
 
 			header, err := client.HeaderByNumber(ctx, nil)
 			if err != nil {
-				fmt.Printf("Error fetching latest block from %s: %v\n", provider.Url, err)
+				slog.Error("failed to fetch latest block", "provider", provider.Url, "error", err)
 				handleProviderFailure(provider, err)
 				continue
 			}
@@ -55,17 +55,16 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 			}
 
 			if from.Cmp(safeBlock) > 0 {
-				fmt.Printf("No new confirmed blocks (lastBlock=%s, safeBlock=%s)\n",
-					lastBlock.String(), safeBlock.String())
+				slog.Info("no new confirmed blocks", "lastBlock", lastBlock, "safeBlock", safeBlock)
 				continue
 			}
 
-			fmt.Printf("Processing blocks %s → %s\n", from.String(), safeBlock.String())
+			slog.Info("processing block range", "from", from, "to", safeBlock)
 
 			for blockNum := new(big.Int).Set(from); blockNum.Cmp(safeBlock) <= 0; blockNum.Add(blockNum, big.NewInt(1)) {
 				block, err := client.BlockByNumber(ctx, new(big.Int).Set(blockNum))
 				if err != nil {
-					fmt.Printf("Error fetching block %s from %s: %v\n", blockNum.String(), provider.Url, err)
+					slog.Error("failed to fetch block", "block", blockNum, "provider", provider.Url, "error", err)
 					handleProviderFailure(provider, err)
 					break
 				}
@@ -76,7 +75,7 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 				wg.Wait()
 				lastBlock = new(big.Int).Set(blockNum)
 			}
-			fmt.Printf("Finished processing up to block %s\n", lastBlock.String())
+			slog.Info("finished processing blocks", "lastBlock", lastBlock)
 		}
 	}
 }
@@ -85,8 +84,12 @@ func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
 	target := common.HexToAddress(addressToMonitor)
 	for _, tx := range txns {
 		if tx.To() != nil && *tx.To() == target {
-			fmt.Printf("Block %s | tx %s → %s | value: %s wei\n",
-				blockNum.String(), tx.Hash().Hex(), tx.To().Hex(), tx.Value().String())
+			slog.Info("incoming txn",
+				"block", blockNum,
+				"tx", tx.Hash().Hex(),
+				"to", tx.To().Hex(),
+				"value", tx.Value().String(),
+			)
 		}
 	}
 }
@@ -97,12 +100,16 @@ func printOutGoingTxns(blockNum *big.Int, txns types.Transactions) {
 		signer := types.LatestSignerForChainID(tx.ChainId())
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
-			fmt.Printf("Block %s | failed to recover sender for tx %s: %v\n", blockNum.String(), tx.Hash().Hex(), err)
+			slog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
 			continue
 		}
 		if sender == target {
-			fmt.Printf("Block %s | tx %s ← %s | value: %s wei\n",
-				blockNum.String(), tx.Hash().Hex(), sender.Hex(), tx.Value().String())
+			slog.Info("outgoing txn",
+				"block", blockNum,
+				"tx", tx.Hash().Hex(),
+				"from", sender.Hex(),
+				"value", tx.Value().String(),
+			)
 		}
 	}
 }
@@ -125,7 +132,7 @@ func handleProviderFailure(provider *providers.RPCProvider, err error) {
 	}
 	provider.FailureCount++
 	if provider.FailureCount >= 3 {
-		fmt.Printf("Provider %s failed %d times, marking unhealthy\n", provider.Url, provider.FailureCount)
+		slog.Warn("provider marked unhealthy", "provider", provider.Url, "failureCount", provider.FailureCount)
 		provider.Status = providers.Unhealthy
 	}
 }
