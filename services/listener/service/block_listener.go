@@ -6,6 +6,7 @@ import (
 	"listener/providers"
 	"math/big"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -68,7 +69,11 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 					handleProviderFailure(provider, err)
 					break
 				}
-				printIncomingTxns(block.Number(), block.Transactions())
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() { defer wg.Done(); printIncomingTxns(block.Number(), block.Transactions()) }()
+				go func() { defer wg.Done(); printOutGoingTxns(block.Number(), block.Transactions()) }()
+				wg.Wait()
 				lastBlock = new(big.Int).Set(blockNum)
 			}
 			fmt.Printf("Finished processing up to block %s\n", lastBlock.String())
@@ -82,6 +87,22 @@ func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
 		if tx.To() != nil && *tx.To() == target {
 			fmt.Printf("Block %s | tx %s → %s | value: %s wei\n",
 				blockNum.String(), tx.Hash().Hex(), tx.To().Hex(), tx.Value().String())
+		}
+	}
+}
+
+func printOutGoingTxns(blockNum *big.Int, txns types.Transactions) {
+	target := common.HexToAddress(addressToMonitor)
+	for _, tx := range txns {
+		signer := types.LatestSignerForChainID(tx.ChainId())
+		sender, err := types.Sender(signer, tx)
+		if err != nil {
+			fmt.Printf("Block %s | failed to recover sender for tx %s: %v\n", blockNum.String(), tx.Hash().Hex(), err)
+			continue
+		}
+		if sender == target {
+			fmt.Printf("Block %s | tx %s ← %s | value: %s wei\n",
+				blockNum.String(), tx.Hash().Hex(), sender.Hex(), tx.Value().String())
 		}
 	}
 }
