@@ -13,81 +13,85 @@ import (
 
 var addressToMonitor = "0x32056651573c19C329c9619DAF25A72e0D8a48dC"
 
-func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) {
+const confirmations = int64(12)
 
-	// Timer to fetch blocks every 1 minute and need one variable to hold the last block scanned.
-	var lastBlock *big.Int = big.NewInt(0)
+func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) {
+	// nil means first run; using nil instead of 0 avoids ambiguity with genesis block
+	var lastBlock *big.Int
 
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	// unlimited loop with reasonable sleep to avoid overwhelming the node
 	for {
-
 		select {
 		case <-ctx.Done():
 			fmt.Println("Shutting down block listener...")
 			return
 		case <-ticker.C:
-			{
-				for _, provider := range *providerList {
+			client, provider, ok := getHealthyClient(providerList)
+			if !ok {
+				fmt.Println("No healthy providers available, skipping tick")
+				continue
+			}
 
-					if provider.Status == providers.Unhealthy {
-						fmt.Printf("Skipping unhealthy provider: %s\n", provider.Url)
-						continue
-					}
+			header, err := client.HeaderByNumber(ctx, nil)
+			if err != nil {
+				fmt.Printf("Error fetching latest block from %s: %v\n", provider.Url, err)
+				handleProviderFailure(provider, err)
+				continue
+			}
 
-					client := provider.Client
+			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(confirmations))
 
-					blockToProcess, err := handleBlockProcess(ctx, client, lastBlock)
-					if err != nil {
-						fmt.Printf("Error processing block with provider %s: %v\n", provider.Url, err)
-						handleProviderFailure(&provider, err)
-						continue
-					}
+			var from *big.Int
+			if lastBlock == nil {
+				// First run: start at safeBlock (latest - 12)
+				from = safeBlock
+			} else {
+				from = new(big.Int).Add(lastBlock, big.NewInt(1))
+			}
 
-					// Process the block (placeholder for actual processing logic)
-					block, err := client.BlockByNumber(ctx, blockToProcess)
-					if err != nil {
-						fmt.Printf("Error fetching block %s with provider %s: %v\n", blockToProcess.String(), provider.Url, err)
-						handleProviderFailure(&provider, err)
-						continue
-					}
+			if from.Cmp(safeBlock) > 0 {
+				fmt.Printf("No new confirmed blocks (lastBlock=%s, safeBlock=%s)\n",
+					lastBlock.String(), safeBlock.String())
+				continue
+			}
 
-					fmt.Printf("Successfully processed block %s with provider %s\n", blockToProcess.String(), provider.Url)
-					fmt.Printf("no. of transactions in block %s: %d\n", blockToProcess.String(), len(block.Transactions()))
+			fmt.Printf("Processing blocks %s → %s\n", from.String(), safeBlock.String())
 
+			for blockNum := new(big.Int).Set(from); blockNum.Cmp(safeBlock) <= 0; blockNum.Add(blockNum, big.NewInt(1)) {
+				block, err := client.BlockByNumber(ctx, new(big.Int).Set(blockNum))
+				if err != nil {
+					fmt.Printf("Error fetching block %s from %s: %v\n", blockNum.String(), provider.Url, err)
+					handleProviderFailure(provider, err)
 					break
 				}
+				fmt.Printf("Block %s | txns: %d\n", blockNum.String(), len(block.Transactions()))
+				lastBlock = new(big.Int).Set(blockNum)
 			}
 		}
-
 	}
 }
 
-func handleBlockProcess(ctx context.Context, client *ethclient.Client, lastBlock *big.Int) (*big.Int, error) {
-	var blockToProcess *big.Int
-	if lastBlock.Cmp(big.NewInt(0)) == 0 {
-		header, err := client.HeaderByNumber(ctx, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get latest block header: %w", err)
+// getHealthyClient returns a pointer to the first healthy provider so mutations
+// (FailureCount, Status) persist back to the original slice.
+func getHealthyClient(providerList *[]providers.RPCProvider) (*ethclient.Client, *providers.RPCProvider, bool) {
+	for i := range *providerList {
+		p := &(*providerList)[i]
+		if p.Status != providers.Unhealthy {
+			return p.Client, p, true
 		}
-		blockToProcess = header.Number
-		fmt.Printf("Starting from latest block: %s\n", blockToProcess.String())
-		return blockToProcess, nil
 	}
-	blockToProcess = new(big.Int).Add(lastBlock, big.NewInt(1))
-	return blockToProcess, nil
+	return nil, nil, false
 }
 
 func handleProviderFailure(provider *providers.RPCProvider, err error) {
 	if _, ok := err.(net.Error); !ok {
 		return
 	}
-	fmt.Printf("Error with provider %s: %v\n", provider.Url, err)
 	provider.FailureCount++
 	if provider.FailureCount >= 3 {
-		fmt.Printf("Provider %s has failed %d times. Consider removing it from the list.\n", provider.Url, provider.FailureCount)
+		fmt.Printf("Provider %s failed %d times, marking unhealthy\n", provider.Url, provider.FailureCount)
 		provider.Status = providers.Unhealthy
 	}
 }
