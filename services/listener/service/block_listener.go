@@ -8,6 +8,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -66,9 +68,20 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 					handleProviderFailure(provider, err)
 					break
 				}
-				fmt.Printf("Block %s | txns: %d\n", blockNum.String(), len(block.Transactions()))
+				printIncomingTxns(block.Number(), block.Transactions())
 				lastBlock = new(big.Int).Set(blockNum)
 			}
+			fmt.Printf("Finished processing up to block %s\n", lastBlock.String())
+		}
+	}
+}
+
+func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
+	target := common.HexToAddress(addressToMonitor)
+	for _, tx := range txns {
+		if tx.To() != nil && *tx.To() == target {
+			fmt.Printf("Block %s | tx %s → %s | value: %s wei\n",
+				blockNum.String(), tx.Hash().Hex(), tx.To().Hex(), tx.Value().String())
 		}
 	}
 }
