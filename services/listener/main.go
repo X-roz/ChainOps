@@ -4,6 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"listener/config"
 	"listener/providers"
@@ -31,6 +34,9 @@ func main() {
 		return
 	}
 
-	service.ListenToBlocks(context.Background(), &providerList)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	service.ListenToBlocks(ctx, &providerList)
 
 }

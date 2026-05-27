@@ -48,7 +48,6 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 
 			var from *big.Int
 			if lastBlock == nil {
-				// First run: start at safeBlock (latest - 12)
 				from = safeBlock
 			} else {
 				from = new(big.Int).Add(lastBlock, big.NewInt(1))
