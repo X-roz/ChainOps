@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"listener/providers"
 	"log/slog"
 	"math/big"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -15,10 +17,13 @@ import (
 
 var addressToMonitor = "0x32056651573c19C329c9619DAF25A72e0D8a48dC"
 
-func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider, safeBlockBuffer int64) {
-	// nil means first run; using nil instead of 0 avoids ambiguity with genesis block
-	var lastBlock *big.Int
+// httpStatusErrors are substrings found in RPC error messages that indicate
+// server-side or rate-limit failures worth counting against a provider.
+var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 
+func ListenToBlocks(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64) {
+	var lastBlock *big.Int
+	var signer types.Signer = types.LatestSignerForChainID(providerList[0].ChainID())
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -36,7 +41,7 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider, 
 
 			header, err := client.HeaderByNumber(ctx, nil)
 			if err != nil {
-				slog.Error("failed to fetch latest block", "provider", provider.Url, "error", err)
+				slog.Error("failed to fetch latest block", "provider", provider.URL(), "error", err)
 				handleProviderFailure(provider, err)
 				continue
 			}
@@ -60,12 +65,12 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider, 
 			for blockNum := new(big.Int).Set(from); blockNum.Cmp(safeBlock) <= 0; blockNum.Add(blockNum, big.NewInt(1)) {
 				block, err := client.BlockByNumber(ctx, new(big.Int).Set(blockNum))
 				if err != nil {
-					slog.Error("failed to fetch block", "block", blockNum, "provider", provider.Url, "error", err)
+					slog.Error("failed to fetch block", "block", blockNum, "provider", provider.URL(), "error", err)
 					handleProviderFailure(provider, err)
 					break
 				}
 				printIncomingTxns(block.Number(), block.Transactions())
-				printOutGoingTxns(block.Number(), block.Transactions())
+				printOutGoingTxns(block.Number(), signer, block.Transactions())
 				lastBlock = new(big.Int).Set(blockNum)
 			}
 			slog.Info("finished processing blocks", "lastBlock", lastBlock)
@@ -87,10 +92,9 @@ func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
 	}
 }
 
-func printOutGoingTxns(blockNum *big.Int, txns types.Transactions) {
+func printOutGoingTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions) {
 	target := common.HexToAddress(addressToMonitor)
 	for _, tx := range txns {
-		signer := types.LatestSignerForChainID(tx.ChainId())
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
 			slog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
@@ -107,25 +111,34 @@ func printOutGoingTxns(blockNum *big.Int, txns types.Transactions) {
 	}
 }
 
-// getHealthyClient returns a pointer to the first healthy provider so mutations
-// (FailureCount, Status) persist back to the original slice.
-func getHealthyClient(providerList *[]providers.RPCProvider) (*ethclient.Client, *providers.RPCProvider, bool) {
-	for i := range *providerList {
-		p := &(*providerList)[i]
-		if p.Status != providers.Unhealthy {
-			return p.Client, p, true
+func getHealthyClient(providerList []*providers.EVMProvider) (*ethclient.Client, *providers.EVMProvider, bool) {
+	for _, p := range providerList {
+		if p.IsHealthy() {
+			return p.Client(), p, true
 		}
 	}
 	return nil, nil, false
 }
 
-func handleProviderFailure(provider *providers.RPCProvider, err error) {
-	if _, ok := err.(net.Error); !ok {
+func isTransientProviderError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if _, ok := err.(net.Error); ok {
+		return true
+	}
+	msg := err.Error()
+	for _, code := range httpStatusErrors {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func handleProviderFailure(provider providers.Provider, err error) {
+	if !isTransientProviderError(err) {
 		return
 	}
-	provider.FailureCount++
-	if provider.FailureCount >= 3 {
-		slog.Warn("provider marked unhealthy", "provider", provider.Url, "failureCount", provider.FailureCount)
-		provider.Status = providers.Unhealthy
-	}
+	provider.RecordFailure()
 }

@@ -27,16 +27,16 @@ func main() {
 
 	slog.Info("config loaded", "network", cfg.Network)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// pass the RPC URLs to the providers package to establish connection
-	providerList, err := providers.Connect(&cfg.RPCURLs)
+	providerList, err := providers.ConnectEVM(ctx, cfg.RPCURLs)
 	if err != nil {
 		slog.Error("failed to connect to providers", "error", err)
 		return
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	service.ListenToBlocks(ctx, &providerList, cfg.SafeBlockBuffer)
+	service.ListenToBlocks(ctx, providerList, cfg.SafeBlockBuffer)
 
 }
