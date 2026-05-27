@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-var addressToMonitor = "0x32056651573c19C329c9619DAF25A72e0D8a48dC"
+var addressToMonitor = common.HexToAddress("0x32056651573c19C329c9619DAF25A72e0D8a48dC")
 
 // httpStatusErrors are substrings found in RPC error messages that indicate
 // server-side or rate-limit failures worth counting against a provider.
@@ -24,9 +24,9 @@ var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64) {
 
 	var lastBlock *big.Int
-	var signer types.Signer = types.LatestSignerForChainID(providerList[0].ChainID())
-	var trackerToRetryUnhealthyProviders time.Time = time.Now().Add(5 * time.Minute)
-	var retryUnhealthyProviders bool = false
+	signer := types.LatestSignerForChainID(providerList[0].ChainID())
+	nextProviderRetry := time.Now().Add(5 * time.Minute)
+	var shouldRetry bool
 
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -38,8 +38,8 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 			return
 		case <-ticker.C:
 
-			retryUnhealthyProviders, trackerToRetryUnhealthyProviders = requireRetry(trackerToRetryUnhealthyProviders)
-			if retryUnhealthyProviders {
+			shouldRetry, nextProviderRetry = requireRetry(nextProviderRetry)
+			if shouldRetry {
 				recoverUnhealthyProviders(ctx, providerList)
 			}
 
@@ -89,9 +89,8 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 }
 
 func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
-	target := common.HexToAddress(addressToMonitor)
 	for _, tx := range txns {
-		if tx.To() != nil && *tx.To() == target {
+		if tx.To() != nil && *tx.To() == addressToMonitor {
 			slog.Info("incoming txn",
 				"block", blockNum,
 				"tx", tx.Hash().Hex(),
@@ -103,14 +102,13 @@ func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
 }
 
 func printOutGoingTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions) {
-	target := common.HexToAddress(addressToMonitor)
 	for _, tx := range txns {
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
 			slog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
 			continue
 		}
-		if sender == target {
+		if sender == addressToMonitor {
 			slog.Info("outgoing txn",
 				"block", blockNum,
 				"tx", tx.Hash().Hex(),

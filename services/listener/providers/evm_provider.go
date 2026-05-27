@@ -65,7 +65,7 @@ func ConnectEVM(ctx context.Context, urls []string) ([]*EVMProvider, error) {
 	var expectedChainID *big.Int
 
 	for _, url := range urls {
-		client, err := ethclient.Dial(url)
+		client, err := ethclient.DialContext(ctx, url)
 		if err != nil {
 			slog.Error("failed to connect to provider", "url", url, "error", err)
 			return nil, err

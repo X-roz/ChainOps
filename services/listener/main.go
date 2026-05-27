@@ -22,7 +22,7 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
-		return
+		os.Exit(1)
 	}
 
 	slog.Info("config loaded", "network", cfg.Network)
@@ -30,11 +30,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// pass the RPC URLs to the providers package to establish connection
 	providerList, err := providers.ConnectEVM(ctx, cfg.RPCURLs)
 	if err != nil {
 		slog.Error("failed to connect to providers", "error", err)
-		return
+		os.Exit(1)
 	}
 
 	service.EvmListener(ctx, providerList, cfg.SafeBlockBuffer)
