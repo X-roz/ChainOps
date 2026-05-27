@@ -35,6 +35,17 @@ func (e *EVMProvider) RecordFailure() {
 	}
 }
 
+func (e *EVMProvider) Recover(ctx context.Context) {
+	_, err := e.client.BlockNumber(ctx)
+	if err != nil {
+		slog.Warn("provider still unhealthy", "url", e.url, "error", err)
+		return
+	}
+	e.failureCount = 0
+	e.status = Healthy
+	slog.Info("provider recovered", "url", e.url)
+}
+
 func (e *EVMProvider) Client() *ethclient.Client {
 	return e.client
 }

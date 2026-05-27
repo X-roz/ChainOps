@@ -21,9 +21,13 @@ var addressToMonitor = "0x32056651573c19C329c9619DAF25A72e0D8a48dC"
 // server-side or rate-limit failures worth counting against a provider.
 var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 
-func ListenToBlocks(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64) {
+func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64) {
+
 	var lastBlock *big.Int
 	var signer types.Signer = types.LatestSignerForChainID(providerList[0].ChainID())
+	var trackerToRetryUnhealthyProviders time.Time = time.Now().Add(5 * time.Minute)
+	var retryUnhealthyProviders bool = false
+
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -33,6 +37,12 @@ func ListenToBlocks(ctx context.Context, providerList []*providers.EVMProvider, 
 			slog.Info("shutting down block listener")
 			return
 		case <-ticker.C:
+
+			retryUnhealthyProviders, trackerToRetryUnhealthyProviders = requireRetry(trackerToRetryUnhealthyProviders)
+			if retryUnhealthyProviders {
+				recoverUnhealthyProviders(ctx, providerList)
+			}
+
 			client, provider, ok := getHealthyClient(providerList)
 			if !ok {
 				slog.Warn("no healthy providers available, skipping tick")
@@ -141,4 +151,19 @@ func handleProviderFailure(provider providers.Provider, err error) {
 		return
 	}
 	provider.RecordFailure()
+}
+
+func requireRetry(nextRetry time.Time) (bool, time.Time) {
+	if time.Now().Before(nextRetry) {
+		return false, nextRetry
+	}
+	return true, time.Now().Add(5 * time.Minute)
+}
+
+func recoverUnhealthyProviders(ctx context.Context, providerList []*providers.EVMProvider) {
+	for _, provider := range providerList {
+		if !provider.IsHealthy() {
+			provider.Recover(ctx)
+		}
+	}
 }

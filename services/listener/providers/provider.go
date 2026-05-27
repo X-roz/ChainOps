@@ -1,5 +1,7 @@
 package providers
 
+import "context"
+
 type ProviderStatus string
 
 const (
@@ -12,5 +14,6 @@ const (
 type Provider interface {
 	IsHealthy() bool
 	RecordFailure()
+	Recover(ctx context.Context)
 	URL() string
 }

@@ -37,6 +37,6 @@ func main() {
 		return
 	}
 
-	service.ListenToBlocks(ctx, providerList, cfg.SafeBlockBuffer)
+	service.EvmListener(ctx, providerList, cfg.SafeBlockBuffer)
 
 }
