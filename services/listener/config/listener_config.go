@@ -7,8 +7,9 @@ import (
 )
 
 type ListenerConfig struct {
-	Network string   `yaml:"network"`
-	RPCURLs []string `yaml:"rpc-urls"`
+	Network         string   `yaml:"network"`
+	RPCURLs         []string `yaml:"rpc-urls"`
+	SafeBlockBuffer int64    `yaml:"safe-block-buffer"`
 }
 
 func Load(path string) (*ListenerConfig, error) {

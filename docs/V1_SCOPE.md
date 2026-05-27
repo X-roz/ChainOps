@@ -18,8 +18,8 @@ V1 demonstrates production-minded blockchain infrastructure thinking: a global w
 
 V1 succeeds if:
 
-- A user can sign in via SIWE, receive a 20-day free trial with one tracked wallet, and watch their Sepolia activity (ETH + USDC transfers, plus all outgoing transactions) appear in their dashboard within ~90 seconds of being mined.
-- Transactions transition correctly from *seen* to *confirmed*, and reorgs during the unconfirmed window result in `reverted` without ledger corruption.
+- A user can sign in via SIWE, receive a 20-day free trial with one tracked wallet, and watch their Sepolia activity (ETH + USDC transfers, plus all outgoing transactions) appear in their dashboard within ~`SAFE_BLOCK_BUFFER × block_time` + processing latency of being mined (Sepolia: ~3 minutes typical).
+- All events shown in the dashboard are pre-buffered to `SAFE_BLOCK_BUFFER` blocks deep, treated as final. No `seen → confirmed` UX state; no reorg handling in V1 (see §4.6).
 - The account lifecycle (FREE_TRIAL → ACTIVE → EXPIRED → DORMANT, plus user-initiated CANCELED / DELETED) is enforced by a scheduled job, with the UI accurately reflecting current state.
 - Premium users can track up to 5 wallets and access export plus the four named analytics views, gated by on-chain subscription state.
 - The same wallet tracked by multiple users is **scanned once globally**, with activity fanned out to all subscribed users.
@@ -111,7 +111,7 @@ For each globally-active wallet, the listener captures:
 - USDC (ERC-20 Transfer) events involving the wallet.
 - All outgoing transactions from the wallet, regardless of type (to support gas analytics — see §4.10).
 
-Each event is persisted to `wallet_activities` with full provenance: tx hash, block number, block hash, asset deployment, raw amount, event type, direction, counterparty address, gas data, observed-at timestamp, state, confirmation count.
+Each event is persisted to `wallet_activities` with full provenance: tx hash, block number, block hash, asset deployment, raw amount, event type, direction, counterparty address, gas data, observed-at timestamp. Block hash is retained for provenance / audit, even though V1 does not act on reorg signals.
 
 "Forward-only" means: nothing before a wallet's `monitoring_started_at` is indexed in V1.
 
@@ -129,23 +129,33 @@ The architectural pattern that makes the platform efficient when multiple users 
 
 **Concurrency note:** the `active_subscriber_count` increment/decrement MUST occur in the same DB transaction as the `user_tracked_wallets` insert/update. Otherwise concurrent add/remove operations can leak the count.
 
-### 4.6 Transaction state machine
+### 4.6 Finality model: listener-side safe-block buffer
 
-`wallet_activities.state`:
+V1 does **not** implement a `seen → confirmed → reverted` state machine, and does not handle reorgs explicitly. Instead, finality is handled at the listener via a **safe-block buffer**: the listener only emits events from blocks at depth ≥ `SAFE_BLOCK_BUFFER` behind the current chain head.
 
-- `seen` — observed in a block, below confirmation threshold.
-- `confirmed` — ≥ threshold confirmations reached, treated as durable.
-- `reverted` — was previously `seen`; reorg detected, no longer in canonical chain.
+- `SAFE_BLOCK_BUFFER` is per-network config. Sepolia default: **12 blocks** (~144 seconds at 12s block time).
+- The listener's effective scan target each tick is `chain_head − SAFE_BLOCK_BUFFER`, not `chain_head`.
+- Events emitted to the MQ are treated by the ledger as **already final**. The ledger writes them as durable rows. There is no `state` column, no confirmation-count tracking, no transition logic.
+- Block hash is still recorded on each row for audit provenance, but is not used to drive any state changes in V1.
+- No `block_advanced` messages. No `reorg` messages. The listener publishes only activity messages.
 
-Confirmation threshold is per-network (config). Sepolia default: **25**.
+**Deep reorgs (depth > `SAFE_BLOCK_BUFFER`)** are not handled in V1. On Sepolia they are rare; if one occurs, the ledger may contain a record of an event that no longer exists on-chain. Documented limitation accepted for V1; revisitable in V2.
+
+**Tradeoffs accepted:**
+
+- **Latency cost:** every event is delayed by ~`SAFE_BLOCK_BUFFER × block_time` before the user sees it (Sepolia: ~2.4 minutes inherent, plus polling and ledger-processing latency).
+- **Simplicity gain:** ledger consumes activity messages and writes them once. No state machine, no rolling confirmation updates, no reorg signal protocol between services.
+- **No "pending" UX state.** Dashboard shows only events the listener has deemed safe to emit.
+
+The earlier design (state machine + block-advancement messages + reorg messages, with a 25-confirmation threshold for `confirmed`) is preserved in the V2+ roadmap should the latency tradeoff become unacceptable.
 
 ### 4.7 Real-time feed
 
-- Dashboard surfaces new activities with current state and confirmation count.
+- Dashboard surfaces new activities as they are emitted by the listener (already past the safe-block buffer; treated as final).
 
 ### 4.8 Filtering, search, history view
 
-- Filter by tracked wallet, asset, direction (in/out), date range, state.
+- Filter by tracked wallet, asset, direction (in/out), date range.
 - Search by counterparty address or tx hash.
 
 ### 4.9 Export (premium)
@@ -177,9 +187,9 @@ All gated by active paid subscription. Computed by live SQL aggregation over `wa
 
 - Listener checkpoint per network (`global_last_scanned_block`)
 - Listener lag (chain head − checkpoint), per network
+- Listener effective safe head (chain head − SAFE_BLOCK_BUFFER), per network
 - RPC error rate, retry counts, provider fallback events
 - Queue depth (RabbitMQ)
-- Reorg event count
 - DB write throughput
 - API request latency / error rate
 - Active subscriptions count, trial conversion rate
@@ -194,7 +204,7 @@ All gated by active paid subscription. Computed by live SQL aggregation over `wa
 
 | Service | Language | Responsibility |
 |---|---|---|
-| `listener-go` | Go | Network-agnostic; per-instance configured with one network's RPC and asset addresses. Polls RPC every 60s. Reads `indexed_wallets` for globally-active wallets to scan. Advances from `global_last_scanned_block` to chain head. Captures ETH transfers, USDC transfers, and all outgoing txs for tracked wallets. Emits to MQ. Persists per-network scan progress. Detects reorgs. |
+| `listener-go` | Go | Network-agnostic; per-instance configured with one network's RPC and asset addresses, including `SAFE_BLOCK_BUFFER`. Polls RPC every 60s. Reads `indexed_wallets` for globally-active wallets to scan. Advances from `global_last_scanned_block` to (chain head − `SAFE_BLOCK_BUFFER`) — never emits events from blocks shallower than the buffer. Captures ETH transfers, USDC transfers, and all outgoing txs for tracked wallets. Emits activity messages to MQ. Persists per-network scan progress. No reorg detection in V1. |
 | `ledger-api-java` | Java / Spring Boot | Owns audit ledger, user/auth model, subscription state, lifecycle scheduled jobs, reporting/export module. SIWE nonce + signature verification. Consumes events from MQ. Listens for `Subscribed` events from on-chain contract. Serves REST APIs. |
 | `smart-contracts` | Solidity / Foundry | One subscription contract per network. V1 deploys one on Sepolia. |
 | `frontend` | React | Dashboard, feed, lifecycle UI (trial countdown, dormant notice), wallet connect (SIWE), subscription flow (approve + subscribe), filters, export trigger. |
@@ -270,7 +280,7 @@ The full schema is at `docs/schema/ChainOps_Schema.sql`. Summary:
 | `assets` | Asset definitions (ETH, USDC). |
 | `asset_deployments` | (asset × network) → contract address + decimals. V1 seed: ETH/Sepolia (native), USDC/Sepolia. |
 | `indexed_wallets` | Global listener state. PK: `(wallet_address, network_id)`. Holds `active_subscriber_count`, `is_globally_active`, `global_last_scanned_block`. |
-| `wallet_activities` | Audit ledger. Stores observed on-chain events with state, confirmations, block hash, direction, counterparty, gas data. |
+| `wallet_activities` | Audit ledger. Stores observed on-chain events with block hash (audit only), direction, counterparty, gas data. No state column in V1 (safe-block buffer model). |
 | `subscriptions` | Cached projection of on-chain subscription state. On-chain contract is source of truth. |
 | `plan_features` | Capability flags per plan. V1: one row (`PREMIUM`). |
 
@@ -278,7 +288,7 @@ The full schema is at `docs/schema/ChainOps_Schema.sql`. Summary:
 
 These fixes to the current draft schema must be applied before any service code is written:
 
-- **`wallet_activities` is missing critical columns.** Add: `state` (seen/confirmed/reverted), `confirmation_count`, `block_hash`, `direction` (in/out), `counterparty_address`, `gas_used`, `effective_gas_price`. Untyped `metadata JSONB` is not a substitute for queryable columns the analytics views depend on.
+- **`wallet_activities` is missing critical columns.** Add: `block_hash` (provenance), `direction` (in/out), `counterparty_address`, `gas_used`, `effective_gas_price`. Untyped `metadata JSONB` is not a substitute for queryable columns the analytics views depend on. **Do NOT add `state` or `confirmation_count`** — V1 uses the safe-block buffer model (§4.6) and does not track transaction state transitions.
 - **`wallet_activities.amount`** should be `NUMERIC(78, 0)` to hold full uint256 raw on-chain values. Decimals are applied at read time via `asset_deployments.decimals`. Never mix display amounts and raw amounts in the same column.
 - **`indexed_wallets` primary key** must be `(wallet_address, network_id)`, not `wallet_address` alone. The same wallet on different chains is a different row.
 - **Indexes required:** `wallet_activities (wallet_address, network_id, occurred_at DESC)`, `wallet_activities (tx_hash)` for dedup, `user_tracked_wallets (user_id) WHERE is_removed = FALSE`.
@@ -294,9 +304,9 @@ These fixes to the current draft schema must be applied before any service code 
 
 ### 7.1 Listener guarantees
 
-- **Resumable on restart.** Per-(wallet, network), `global_last_scanned_block` is persisted after every successful block batch. Listener resumes from `last + 1`.
+- **Resumable on restart.** Per-network, `global_last_scanned_block` is persisted after every successful block batch. Listener resumes from `last + 1`.
 - **Idempotent emission.** Re-emitting a previously-seen event must not produce a duplicate `wallet_activities` row. Dedup key: `(tx_hash, wallet_address, network_id)` for native transfers; `(tx_hash, log_index, wallet_address, network_id)` for ERC-20 events.
-- **Reorg-aware.** Listener tracks a configurable window of recent block hashes. When a previously-emitted block is no longer canonical, it emits a reorg signal; the ledger transitions affected rows to `reverted`.
+- **Safe-block buffer.** Listener never emits events from blocks shallower than `SAFE_BLOCK_BUFFER` (Sepolia: 12). This is the V1 substitute for explicit reorg handling — emitted events are treated as final by the ledger.
 
 ### 7.2 RPC resilience
 
@@ -307,14 +317,14 @@ These fixes to the current draft schema must be applied before any service code 
 ### 7.3 Metrics (Prometheus)
 
 - `chainops_listener_last_processed_block{network}`
-- `chainops_listener_chain_head_lag_blocks{network}`
+- `chainops_listener_safe_head_block{network}` (chain head − SAFE_BLOCK_BUFFER)
+- `chainops_listener_chain_head_lag_blocks{network}` (safe head − last processed)
 - `chainops_listener_rpc_errors_total{network,provider,method}`
 - `chainops_listener_blocks_processed_total{network}`
-- `chainops_listener_reorgs_observed_total{network}`
 - `chainops_listener_globally_active_wallets{network}`
 - `chainops_mq_publish_errors_total`
 - `chainops_mq_queue_depth{queue}`
-- `chainops_ledger_writes_total{event_type,state}`
+- `chainops_ledger_writes_total{event_type}`
 - `chainops_api_request_duration_seconds{route}`
 - `chainops_active_subscriptions`
 - `chainops_lifecycle_transitions_total{from_state,to_state}`
@@ -388,19 +398,19 @@ These fixes to the current draft schema must be applied before any service code 
 - **2026-05-24 — One auth wallet per user in V1.** Schema permits N rows for V2.
 - **2026-05-24 — Backfill cut entirely from V1.** DORMANT users (trial or paid) accept the data gap on reactivation. UI displays gap notification. Backfill is V2.
 - **2026-05-24 — DORMANT lifecycle enforced** by a scheduled job (daily cadence). EXPIRED → DORMANT grace window pending (Open Question).
+- **2026-05-26 — Finality model: safe-block buffer instead of state machine.** Listener buffers `SAFE_BLOCK_BUFFER` blocks (Sepolia: 12) and only emits events from depths ≥ that buffer. Ledger treats emitted events as final. No `seen/confirmed/reverted` state machine, no reorg handling, no `block_advanced` or `reorg` messages in V1. Latency cost (~2.4 min on Sepolia) accepted in exchange for radically simpler ledger semantics. Deep reorgs (depth > buffer) are an accepted V1 limitation. State machine preserved in V2+ roadmap.
 
 ---
 
 ## 11. Open Questions
 
 1. **Audit ledger schema final shape.** Apply §6.1 fixes; finalize column set on `wallet_activities` before writing the listener emitter or the ledger writer.
-2. **Reorg handling depth.** Maximum reorg depth tracked per network. Window of recent block hashes the listener keeps in memory / persists.
-3. **Listener → ledger reorg signal contract.** Message shape for "this previously-emitted block is no longer canonical."
-4. **SIWE session lifetime and refresh.** JWT TTL, refresh strategy, revocation on wallet-disconnect.
-5. **Subscription event reconciliation lag.** Acceptable latency between `Subscribed` event landing on-chain and backend granting premium access. UX implication: "I paid, why am I not premium yet?"
-6. **EXPIRED → DORMANT grace window.** Suggested default: 3 days. Confirm.
-7. **Notification surface for state transitions.** In-app feed confirms via dashboard; revisit whether trial-expiry needs proactive prompting in UI.
-8. **Concurrency model for `active_subscriber_count` updates.** DB transaction wrapping add/remove + count update is the V1 plan; confirm whether row-level locking is sufficient or optimistic-concurrency retries are needed.
+2. **SIWE session lifetime and refresh.** JWT TTL, refresh strategy, revocation on wallet-disconnect.
+3. **Subscription event reconciliation lag.** Acceptable latency between `Subscribed` event landing on-chain and backend granting premium access. UX implication: "I paid, why am I not premium yet?"
+4. **EXPIRED → DORMANT grace window.** Suggested default: 3 days. Confirm.
+5. **Notification surface for state transitions.** In-app feed confirms via dashboard; revisit whether trial-expiry needs proactive prompting in UI.
+6. **Concurrency model for `active_subscriber_count` updates.** DB transaction wrapping add/remove + count update is the V1 plan; confirm whether row-level locking is sufficient or optimistic-concurrency retries are needed.
+7. **Activity message contract.** With state machine cut, the listener emits exactly one message type (activity events). Finalize the JSON schema before the listener wires up MQ publishing (v0.4 of listener build).
 
 ---
 
@@ -421,14 +431,15 @@ These fixes to the current draft schema must be applied before any service code 
 - **Pre-computed analytics roll-ups** (materialized views, scheduled aggregation).
 - **Account recovery flow** (social recovery, multi-sig owned account).
 - **`PAST_DUE` subscription status** when recurring billing is introduced.
+- **Transaction state machine** (`seen` → `confirmed` → `reverted`) with block-advancement and reorg messages, replacing the V1 safe-block buffer when sub-buffer-latency UX is needed or when deep-reorg correctness becomes a real risk (relevant on mainnet, less so on Sepolia).
 
 ---
 
 ## 13. Definition of Done for V1
 
 1. A user can sign in via SIWE on Sepolia. Account is created, FREE_TRIAL activated, sign-in wallet auto-registered as tracked wallet.
-2. Within 90 seconds of a Sepolia ETH or USDC transfer involving a tracked wallet, the activity appears in the user's feed.
-3. Transactions transition `seen → confirmed` and a simulated reorg correctly produces `reverted`.
+2. Within ~3 minutes of a Sepolia ETH or USDC transfer involving a tracked wallet, the activity appears in the user's feed (`SAFE_BLOCK_BUFFER × block_time` + polling/processing overhead).
+3. Listener correctly buffers `SAFE_BLOCK_BUFFER` blocks behind chain head; no events from shallower blocks are ever emitted (verified by inspecting the message stream against chain head).
 4. Free / trial user can register at most 1 tracked wallet; attempts beyond this are rejected with a clear UI message and CTA to subscribe.
 5. Premium user can register up to 5 tracked wallets, each requiring an ownership-proof signature.
 6. Two users tracking the same wallet result in exactly one entry in `indexed_wallets` and one set of `wallet_activities` rows, fanned out to both at read time.

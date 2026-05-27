@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -16,9 +15,7 @@ import (
 
 var addressToMonitor = "0x32056651573c19C329c9619DAF25A72e0D8a48dC"
 
-const confirmations = int64(12)
-
-func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) {
+func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider, safeBlockBuffer int64) {
 	// nil means first run; using nil instead of 0 avoids ambiguity with genesis block
 	var lastBlock *big.Int
 
@@ -44,7 +41,7 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 				continue
 			}
 
-			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(confirmations))
+			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(safeBlockBuffer))
 
 			var from *big.Int
 			if lastBlock == nil {
@@ -67,11 +64,8 @@ func ListenToBlocks(ctx context.Context, providerList *[]providers.RPCProvider) 
 					handleProviderFailure(provider, err)
 					break
 				}
-				var wg sync.WaitGroup
-				wg.Add(2)
-				go func() { defer wg.Done(); printIncomingTxns(block.Number(), block.Transactions()) }()
-				go func() { defer wg.Done(); printOutGoingTxns(block.Number(), block.Transactions()) }()
-				wg.Wait()
+				printIncomingTxns(block.Number(), block.Transactions())
+				printOutGoingTxns(block.Number(), block.Transactions())
 				lastBlock = new(big.Int).Set(blockNum)
 			}
 			slog.Info("finished processing blocks", "lastBlock", lastBlock)

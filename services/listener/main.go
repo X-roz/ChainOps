@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,22 +21,22 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Println("Error loading config:", err)
+		slog.Error("failed to load config", "error", err)
 		return
 	}
 
-	fmt.Println("Loaded config for network:", cfg.Network)
+	slog.Info("config loaded", "network", cfg.Network)
 
 	// pass the RPC URLs to the providers package to establish connection
 	providerList, err := providers.Connect(&cfg.RPCURLs)
 	if err != nil {
-		fmt.Println("Error connecting to providers:", err)
+		slog.Error("failed to connect to providers", "error", err)
 		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	service.ListenToBlocks(ctx, &providerList)
+	service.ListenToBlocks(ctx, &providerList, cfg.SafeBlockBuffer)
 
 }
