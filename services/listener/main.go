@@ -30,12 +30,34 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	providerList, err := providers.ConnectEVM(ctx, cfg.RPCURLs)
-	if err != nil {
-		slog.Error("failed to connect to providers", "error", err)
-		os.Exit(1)
+	if cfg.EvmBlockListen {
+		if len(cfg.RPCURLs) == 0 {
+			slog.Error("evm-block-listen is enabled but no rpc-urls configured")
+			os.Exit(1)
+		}
+		providerList, err := providers.ConnectEVM(ctx, cfg.RPCURLs)
+		if err != nil {
+			slog.Error("failed to connect to rpc providers", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("rpc providers connected", "count", len(providerList))
+		go service.EvmListener(ctx, providerList, cfg.SafeBlockBuffer)
 	}
 
-	service.EvmListener(ctx, providerList, cfg.SafeBlockBuffer)
+	if cfg.UsdcListen {
+		if len(cfg.SubscriberURLs) == 0 {
+			slog.Error("usdc-listen is enabled but no subscriber-urls configured")
+			os.Exit(1)
+		}
+		subscriberList, err := providers.ConnectEVM(ctx, cfg.SubscriberURLs)
+		if err != nil {
+			slog.Error("failed to connect to subscriber providers", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("subscriber providers connected", "count", len(subscriberList))
+		go service.USDCEventListener(ctx, subscriberList)
+	}
+
+	<-ctx.Done()
 
 }
