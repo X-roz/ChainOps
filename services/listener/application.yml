@@ -1,8 +1,12 @@
-server: 8080
-
 network: Sepolia
 safe-block-buffer: 12
 rpc-urls:
   - https://0xrpc.io/sep
   - https://ethereum-sepolia-rpc.publicnode.com
   - https://eth-sepolia-testnet.api.pocket.network
+
+# WebSocket endpoints required for event subscriptions
+subscriber-urls:
+  - wss://ethereum-sepolia-rpc.publicnode.com
+  - wss://0xrpc.io/sep
+  - wss://sepolia.drpc.org
