@@ -55,7 +55,7 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("subscriber providers connected", "count", len(subscriberList))
-		go service.USDCEventListener(ctx, subscriberList)
+		go service.USDCEventListener(ctx, subscriberList, cfg.SafeBlockBuffer)
 	}
 
 	<-ctx.Done()

@@ -29,7 +29,7 @@ func (e *EVMProvider) URL() string {
 // RecordFailure increments the failure count and marks the provider unhealthy at threshold 3.
 func (e *EVMProvider) RecordFailure() {
 	e.failureCount++
-	if e.failureCount >= 3 {
+	if e.failureCount > 0 {
 		slog.Warn("provider marked unhealthy", "url", e.url, "failureCount", e.failureCount)
 		e.status = Unhealthy
 	}
