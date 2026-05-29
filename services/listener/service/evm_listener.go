@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"listener/providers"
 	"log/slog"
 	"math/big"
@@ -23,7 +24,7 @@ var addressToMonitor = common.HexToAddress("0x32056651573c19C329c9619DAF25A72e0D
 // server-side or rate-limit failures worth counting against a provider.
 var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 
-func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64) {
+func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64, usdcListen bool) {
 
 	var lastBlock *big.Int
 	signer := types.LatestSignerForChainID(providerList[0].ChainID())
@@ -81,8 +82,10 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 					handleProviderFailure(provider, err)
 					break
 				}
-				printIncomingTxns(block.Number(), block.Transactions())
-				printOutGoingTxns(block.Number(), signer, block.Transactions())
+				printTxns(block.Number(), signer, block.Transactions())
+				if usdcListen {
+					checkUSDCTransfers(ctx, client, block)
+				}
 				lastBlock = new(big.Int).Set(blockNum)
 			}
 			evmLog.Info("finished processing blocks", "lastBlock", lastBlock)
@@ -90,34 +93,48 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 	}
 }
 
-func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
+func printTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions) {
 	for _, tx := range txns {
 		if tx.To() != nil && *tx.To() == addressToMonitor {
 			evmLog.Info("incoming txn",
 				"block", blockNum,
 				"tx", tx.Hash().Hex(),
-				"to", tx.To().Hex(),
+				"from", tx.To().Hex(),
 				"value", tx.Value().String(),
 			)
 		}
-	}
-}
 
-func printOutGoingTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions) {
-	for _, tx := range txns {
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
 			evmLog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
 			continue
 		}
 		if sender == addressToMonitor {
-			evmLog.Info("outgoing txn",
-				"block", blockNum,
-				"tx", tx.Hash().Hex(),
-				"from", sender.Hex(),
-				"value", tx.Value().String(),
-			)
+			logOutgoingTxn(blockNum, sender, tx)
 		}
+	}
+}
+
+func logOutgoingTxn(blockNum *big.Int, sender common.Address, tx *types.Transaction) {
+	base := []any{
+		"block", blockNum,
+		"tx", tx.Hash().Hex(),
+		"from", sender.Hex(),
+		"value", tx.Value().String(),
+	}
+
+	switch {
+	case tx.To() == nil:
+		evmLog.Info("outgoing txn: contract deployment", base...)
+	case len(tx.Data()) == 0:
+		evmLog.Info("outgoing txn: ETH transfer",
+			append(base, "to", tx.To().Hex())...)
+	case tx.Value().Sign() > 0:
+		evmLog.Info("outgoing txn: contract call with ETH",
+			append(base, "to", tx.To().Hex(), "selector", fmt.Sprintf("0x%x", tx.Data()[:4]))...)
+	default:
+		evmLog.Info("outgoing txn: contract call",
+			append(base, "to", tx.To().Hex(), "selector", fmt.Sprintf("0x%x", tx.Data()[:4]))...)
 	}
 }
 

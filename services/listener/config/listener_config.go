@@ -9,7 +9,6 @@ import (
 type ListenerConfig struct {
 	Network         string   `yaml:"network"`
 	RPCURLs         []string `yaml:"rpc-urls"`
-	SubscriberURLs  []string `yaml:"subscriber-urls"`
 	SafeBlockBuffer int64    `yaml:"safe-block-buffer"`
 	EvmBlockListen  bool     `yaml:"evm-block-listen"`
 	UsdcListen      bool     `yaml:"usdc-listen"`
