@@ -14,6 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
+var usdcLog = slog.With("listener", "[usdc_event]")
+
 var usdcAddress = common.HexToAddress("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238")
 
 var transferTopic = crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
@@ -26,10 +28,10 @@ func USDCEventListener(ctx context.Context, subscriberList []*providers.EVMProvi
 	for {
 		provider, ok := getHealthySubscriber(subscriberList)
 		if !ok {
-			slog.Error("no healthy subscriber providers available")
+			usdcLog.Error("no healthy subscriber providers available")
 			select {
 			case <-ctx.Done():
-				slog.Info("shutting down USDC event listener")
+				usdcLog.Info("shutting down USDC event listener")
 				return
 			case <-time.After(10 * time.Second):
 				continue
@@ -39,7 +41,7 @@ func USDCEventListener(ctx context.Context, subscriberList []*providers.EVMProvi
 		if lastBlock > 0 {
 			caught, err := catchUpUSDCLogs(ctx, provider.Client(), lastBlock+1, safeBlockBuffer)
 			if err != nil {
-				slog.Error("USDC catch-up failed", "fromBlock", lastBlock+1, "error", err)
+				usdcLog.Error("USDC catch-up failed", "fromBlock", lastBlock+1, "error", err)
 				provider.RecordFailure()
 			} else {
 				lastBlock = caught
@@ -50,10 +52,10 @@ func USDCEventListener(ctx context.Context, subscriberList []*providers.EVMProvi
 
 		select {
 		case <-ctx.Done():
-			slog.Info("shutting down USDC event listener")
+			usdcLog.Info("shutting down USDC event listener")
 			return
 		case <-time.After(5 * time.Second):
-			slog.Info("retrying USDC subscription", "fromBlock", lastBlock+1)
+			usdcLog.Info("retrying USDC subscription", "fromBlock", lastBlock+1)
 		}
 	}
 }
@@ -97,7 +99,7 @@ func catchUpUSDCLogs(ctx context.Context, client *ethclient.Client, fromBlock ui
 		return fromBlock - 1, err
 	}
 
-	slog.Info("USDC catch-up complete", "fromBlock", fromBlock, "toBlock", toBlock, "events", len(logs))
+	usdcLog.Info("USDC catch-up complete", "fromBlock", fromBlock, "toBlock", toBlock, "events", len(logs))
 	for _, vlog := range logs {
 		processUSDCLog(vlog)
 	}
@@ -114,18 +116,18 @@ func liveSubscribeUSDC(ctx context.Context, provider *providers.EVMProvider, las
 
 	sub, err := provider.Client().SubscribeFilterLogs(ctx, query, logs)
 	if err != nil {
-		slog.Error("failed to subscribe to USDC transfer events", "provider", provider.URL(), "error", err)
+		usdcLog.Error("failed to subscribe to USDC transfer events", "provider", provider.URL(), "error", err)
 		provider.RecordFailure()
 		return lastBlock
 	}
-	slog.Info("subscribed to USDC transfer events", "provider", provider.URL())
+	usdcLog.Info("subscribed to USDC transfer events", "provider", provider.URL())
 
 	for {
 		select {
 		case <-ctx.Done():
 			return lastBlock
 		case err := <-sub.Err():
-			slog.Error("USDC subscription dropped", "provider", provider.URL(), "error", err)
+			usdcLog.Error("USDC subscription dropped", "provider", provider.URL(), "error", err)
 			handleProviderFailure(provider, err)
 			return lastBlock
 		case vlog := <-logs:
@@ -139,13 +141,13 @@ func liveSubscribeUSDC(ctx context.Context, provider *providers.EVMProvider, las
 
 func processUSDCLog(vlog types.Log) {
 	if vlog.Removed {
-		slog.Warn("USDC transfer reorged out",
+		usdcLog.Warn("USDC transfer reorged out",
 			"block", vlog.BlockNumber,
 			"txHash", vlog.TxHash.String(),
 		)
 		return
 	}
-	slog.Info("USDC transfer event",
+	usdcLog.Info("USDC transfer event",
 		"block", vlog.BlockNumber,
 		"txHash", vlog.TxHash.String(),
 		"from", common.BytesToAddress(vlog.Topics[1].Bytes()),

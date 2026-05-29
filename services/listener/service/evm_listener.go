@@ -15,6 +15,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
+var evmLog = slog.With("listener", "[evm_listener]")
+
 var addressToMonitor = common.HexToAddress("0x32056651573c19C329c9619DAF25A72e0D8a48dC")
 
 // httpStatusErrors are substrings found in RPC error messages that indicate
@@ -34,7 +36,7 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("shutting down block listener")
+			evmLog.Info("shutting down block listener")
 			return
 		case <-ticker.C:
 
@@ -45,13 +47,13 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 
 			client, provider, ok := getHealthyClient(providerList)
 			if !ok {
-				slog.Warn("no healthy providers available, skipping tick")
+				evmLog.Warn("no healthy providers available, skipping tick")
 				continue
 			}
 
 			header, err := client.HeaderByNumber(ctx, nil)
 			if err != nil {
-				slog.Error("failed to fetch latest block", "provider", provider.URL(), "error", err)
+				evmLog.Error("failed to fetch latest block", "provider", provider.URL(), "error", err)
 				handleProviderFailure(provider, err)
 				continue
 			}
@@ -66,16 +68,16 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 			}
 
 			if from.Cmp(safeBlock) > 0 {
-				slog.Info("no new confirmed blocks", "lastBlock", lastBlock, "safeBlock", safeBlock)
+				evmLog.Info("no new confirmed blocks", "lastBlock", lastBlock, "safeBlock", safeBlock)
 				continue
 			}
 
-			slog.Info("processing block range", "from", from, "to", safeBlock)
+			evmLog.Info("processing block range", "from", from, "to", safeBlock)
 
 			for blockNum := new(big.Int).Set(from); blockNum.Cmp(safeBlock) <= 0; blockNum.Add(blockNum, big.NewInt(1)) {
 				block, err := client.BlockByNumber(ctx, new(big.Int).Set(blockNum))
 				if err != nil {
-					slog.Error("failed to fetch block", "block", blockNum, "provider", provider.URL(), "error", err)
+					evmLog.Error("failed to fetch block", "block", blockNum, "provider", provider.URL(), "error", err)
 					handleProviderFailure(provider, err)
 					break
 				}
@@ -83,7 +85,7 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 				printOutGoingTxns(block.Number(), signer, block.Transactions())
 				lastBlock = new(big.Int).Set(blockNum)
 			}
-			slog.Info("finished processing blocks", "lastBlock", lastBlock)
+			evmLog.Info("finished processing blocks", "lastBlock", lastBlock)
 		}
 	}
 }
@@ -91,7 +93,7 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 func printIncomingTxns(blockNum *big.Int, txns types.Transactions) {
 	for _, tx := range txns {
 		if tx.To() != nil && *tx.To() == addressToMonitor {
-			slog.Info("incoming txn",
+			evmLog.Info("incoming txn",
 				"block", blockNum,
 				"tx", tx.Hash().Hex(),
 				"to", tx.To().Hex(),
@@ -105,11 +107,11 @@ func printOutGoingTxns(blockNum *big.Int, signer types.Signer, txns types.Transa
 	for _, tx := range txns {
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
-			slog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
+			evmLog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
 			continue
 		}
 		if sender == addressToMonitor {
-			slog.Info("outgoing txn",
+			evmLog.Info("outgoing txn",
 				"block", blockNum,
 				"tx", tx.Hash().Hex(),
 				"from", sender.Hex(),
