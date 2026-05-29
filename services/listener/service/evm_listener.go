@@ -84,7 +84,7 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 				}
 				printTxns(block.Number(), signer, block.Transactions())
 				if usdcListen {
-					checkUSDCTransfers(ctx, client, block)
+					checkUSDCTransferWithLogs(ctx, client, block)
 				}
 				lastBlock = new(big.Int).Set(blockNum)
 			}
