@@ -147,11 +147,42 @@ func processUSDCLog(vlog types.Log) {
 		)
 		return
 	}
-	usdcLog.Info("USDC transfer event",
-		"block", vlog.BlockNumber,
-		"txHash", vlog.TxHash.String(),
-		"from", common.BytesToAddress(vlog.Topics[1].Bytes()),
-		"to", common.BytesToAddress(vlog.Topics[2].Bytes()),
-		"value", new(big.Int).SetBytes(vlog.Data).String(),
-	)
+
+	from := common.BytesToAddress(vlog.Topics[1].Bytes())
+	to := common.BytesToAddress(vlog.Topics[2].Bytes())
+	value := new(big.Int).SetBytes(vlog.Data).String()
+	zero := common.Address{}
+
+	switch {
+	case to == addressToMonitor && from == zero:
+		usdcLog.Info("USDC mint",
+			"block", vlog.BlockNumber,
+			"txHash", vlog.TxHash.String(),
+			"to", to,
+			"value", value,
+		)
+	case to == addressToMonitor:
+		usdcLog.Info("USDC incoming transfer",
+			"block", vlog.BlockNumber,
+			"txHash", vlog.TxHash.String(),
+			"from", from,
+			"to", to,
+			"value", value,
+		)
+	case from == addressToMonitor && to == zero:
+		usdcLog.Info("USDC burn",
+			"block", vlog.BlockNumber,
+			"txHash", vlog.TxHash.String(),
+			"from", from,
+			"value", value,
+		)
+	case from == addressToMonitor:
+		usdcLog.Info("USDC outgoing transfer",
+			"block", vlog.BlockNumber,
+			"txHash", vlog.TxHash.String(),
+			"from", from,
+			"to", to,
+			"value", value,
+		)
+	}
 }
