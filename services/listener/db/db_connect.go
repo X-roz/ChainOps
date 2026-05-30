@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	_ "listener/logger"
 	"log/slog"
 
 	"listener/config"
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var dblog = slog.With("db", "[connection]")
 var pool *pgxpool.Pool
 
 func Connect(ctx context.Context, cfg config.DatabaseConfig) error {
@@ -34,6 +36,6 @@ func Connect(ctx context.Context, cfg config.DatabaseConfig) error {
 		return fmt.Errorf("database unreachable: %w", err)
 	}
 
-	slog.Info("connected to database", "host", cfg.Host, "dbname", cfg.DBName)
+	dblog.Info("connected to database", "host", cfg.Host, "dbname", cfg.DBName)
 	return nil
 }

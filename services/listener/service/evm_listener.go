@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	_ "listener/logger"
 	"listener/db"
 	"listener/providers"
 	"log/slog"

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,9 @@ func Load(path string) (*ListenerConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+
+	// Always load network in lowercase
+	cfg.Network = strings.ToLower(cfg.Network)
 
 	return &cfg, nil
 }

@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	_ "listener/logger"
 	"log/slog"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 )
+
+var providerLog = slog.With("provider", "[evm_provider]")
 
 type EVMProvider struct {
 	url          string
@@ -30,7 +33,7 @@ func (e *EVMProvider) URL() string {
 func (e *EVMProvider) RecordFailure() {
 	e.failureCount++
 	if e.failureCount > 0 {
-		slog.Warn("provider marked unhealthy", "url", e.url, "failureCount", e.failureCount)
+		providerLog.Warn("provider marked unhealthy", "url", e.url, "failureCount", e.failureCount)
 		e.status = Unhealthy
 	}
 }
@@ -38,12 +41,12 @@ func (e *EVMProvider) RecordFailure() {
 func (e *EVMProvider) Recover(ctx context.Context) {
 	_, err := e.client.BlockNumber(ctx)
 	if err != nil {
-		slog.Warn("provider still unhealthy", "url", e.url, "error", err)
+		providerLog.Warn("provider still unhealthy", "url", e.url, "error", err)
 		return
 	}
 	e.failureCount = 0
 	e.status = Healthy
-	slog.Info("provider recovered", "url", e.url)
+	providerLog.Info("provider recovered", "url", e.url)
 }
 
 func (e *EVMProvider) Client() *ethclient.Client {
@@ -67,13 +70,13 @@ func ConnectEVM(ctx context.Context, urls []string) ([]*EVMProvider, error) {
 	for _, url := range urls {
 		client, err := ethclient.DialContext(ctx, url)
 		if err != nil {
-			slog.Error("failed to connect to provider", "url", url, "error", err)
+			providerLog.Error("failed to connect to provider", "url", url, "error", err)
 			return nil, err
 		}
 
 		chainID, err := client.ChainID(ctx)
 		if err != nil {
-			slog.Error("failed to fetch chain ID", "url", url, "error", err)
+			providerLog.Error("failed to fetch chain ID", "url", url, "error", err)
 			return nil, err
 		}
 
@@ -89,9 +92,9 @@ func ConnectEVM(ctx context.Context, urls []string) ([]*EVMProvider, error) {
 			status:  Healthy,
 			chainID: chainID,
 		})
-		slog.Info("connected to provider", "url", url, "chainID", chainID)
+		providerLog.Info("connected to provider", "url", url, "chainID", chainID)
 	}
 
-	slog.Info("all providers connected", "count", len(providerList), "chainID", expectedChainID)
+	providerLog.Info("all providers connected", "count", len(providerList), "chainID", expectedChainID)
 	return providerList, nil
 }

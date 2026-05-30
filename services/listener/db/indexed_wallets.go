@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"log/slog"
-	"strings"
 )
 
 var walletLog = slog.With("db", "[wallets]")
@@ -17,7 +16,7 @@ func GetIndexedAddressToMonitor(ctx context.Context, networkKey string) ([]strin
 		 JOIN networks n ON n.id = iw.network_id
 		 WHERE iw.active_subscriber_count > 0
 		   AND n.network_key = $1`,
-		strings.ToLower(networkKey),
+		networkKey,
 	)
 	if err != nil {
 		walletLog.Error("failed to query indexed wallets", "network", networkKey, "error", err)
