@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	_ "listener/logger"
 	"listener/db"
+	_ "listener/logger"
 	"listener/providers"
 	"log/slog"
 	"math/big"
@@ -56,14 +56,14 @@ func (el *EvmListener) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 
-			rawAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkKey)
+			indexAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkKey)
 			if err != nil {
 				evmLog.Error("failed to get indexed addresses", "error", err)
 				continue
 			}
 			var addressesToMonitor []common.Address
-			for _, addr := range rawAddresses {
-				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(addr))
+			for _, idxAddress := range indexAddresses {
+				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(idxAddress.WalletAddress))
 			}
 
 			if len(addressesToMonitor) == 0 {
