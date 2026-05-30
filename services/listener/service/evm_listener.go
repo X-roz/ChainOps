@@ -23,10 +23,25 @@ var evmLog = slog.With("listener", "[evm_listener]")
 // server-side or rate-limit failures worth counting against a provider.
 var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 
-func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, safeBlockBuffer int64, usdcListen bool) {
+type EvmListener struct {
+	providerList    []*providers.EVMProvider
+	safeBlockBuffer int64
+	usdcListen      bool
+	networkKey      string
+}
 
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, usdcListen bool, networkKey string) *EvmListener {
+	return &EvmListener{
+		providerList:    providerList,
+		safeBlockBuffer: safeBlockBuffer,
+		usdcListen:      usdcListen,
+		networkKey:      networkKey,
+	}
+}
+
+func (el *EvmListener) Run(ctx context.Context) {
 	var lastBlock *big.Int
-	signer := types.LatestSignerForChainID(providerList[0].ChainID())
+	signer := types.LatestSignerForChainID(el.providerList[0].ChainID())
 	nextProviderRetry := time.Now().Add(5 * time.Minute)
 	var shouldRetry bool
 
@@ -40,7 +55,11 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 			return
 		case <-ticker.C:
 
-			rawAddresses := db.GetIndexedAddressToMonitor(ctx)
+			rawAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkKey)
+			if err != nil {
+				evmLog.Error("failed to get indexed addresses", "error", err)
+				continue
+			}
 			var addressesToMonitor []common.Address
 			for _, addr := range rawAddresses {
 				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(addr))
@@ -53,10 +72,10 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 
 			shouldRetry, nextProviderRetry = requireRetry(nextProviderRetry)
 			if shouldRetry {
-				recoverUnhealthyProviders(ctx, providerList)
+				recoverUnhealthyProviders(ctx, el.providerList)
 			}
 
-			client, provider, ok := getHealthyClient(providerList)
+			client, provider, ok := getHealthyClient(el.providerList)
 			if !ok {
 				evmLog.Warn("no healthy providers available, skipping tick")
 				continue
@@ -69,7 +88,7 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 				continue
 			}
 
-			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(safeBlockBuffer))
+			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(el.safeBlockBuffer))
 
 			var from *big.Int
 			if lastBlock == nil {
@@ -93,7 +112,7 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 					break
 				}
 				printTxns(block.Number(), signer, block.Transactions(), addressesToMonitor)
-				if usdcListen {
+				if el.usdcListen {
 					checkUSDCTransferWithLogs(ctx, client, block, addressesToMonitor)
 				}
 				lastBlock = new(big.Int).Set(blockNum)

@@ -36,6 +36,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	if _, err := db.GetNetworkIDByKey(ctx, cfg.Network); err != nil {
+		slog.Error("network not found or inactive in database, stopping listener", "network", cfg.Network)
+		os.Exit(1)
+	}
+	slog.Info("network validated", "network", cfg.Network)
+
 	if cfg.EvmBlockListen {
 		if len(cfg.RPCURLs) == 0 {
 			slog.Error("evm-block-listen is enabled but no rpc-urls configured")
@@ -47,7 +53,7 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("rpc providers connected", "count", len(providerList))
-		go service.EvmListener(ctx, providerList, cfg.SafeBlockBuffer, cfg.UsdcListen)
+		go service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.UsdcListen, cfg.Network).Run(ctx)
 	}
 
 	<-ctx.Done()
