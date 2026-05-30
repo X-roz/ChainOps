@@ -30,9 +30,9 @@ CREATE TABLE networks (
     id UUID PRIMARY KEY,
     network_key VARCHAR(50) NOT NULL UNIQUE,
     display_name VARCHAR(100) NOT NULL,
-    rpc_chain_identifier VARCHAR(100),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 -- =====================================================
 -- ASSETS
@@ -81,7 +81,6 @@ CREATE TABLE user_tracked_wallets (
 CREATE TABLE indexed_wallets (
     wallet_address VARCHAR(100) PRIMARY KEY,
     active_subscriber_count INTEGER NOT NULL DEFAULT 0,
-    is_globally_active BOOLEAN NOT NULL DEFAULT TRUE,
     global_last_scanned_block BIGINT,
     latest_activity_block BIGINT,
     last_activity_at TIMESTAMP,

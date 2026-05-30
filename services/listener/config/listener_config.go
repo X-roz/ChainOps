@@ -6,12 +6,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type DatabaseConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbname"`
+	SSLMode  string `yaml:"sslmode"`
+	Timezone string `yaml:"timezone"`
+}
+
 type ListenerConfig struct {
-	Network         string   `yaml:"network"`
-	RPCURLs         []string `yaml:"rpc-urls"`
-	SafeBlockBuffer int64    `yaml:"safe-block-buffer"`
-	EvmBlockListen  bool     `yaml:"evm-block-listen"`
-	UsdcListen      bool     `yaml:"usdc-listen"`
+	Network         string         `yaml:"network"`
+	RPCURLs         []string       `yaml:"rpc-urls"`
+	SafeBlockBuffer int64          `yaml:"safe-block-buffer"`
+	EvmBlockListen  bool           `yaml:"evm-block-listen"`
+	UsdcListen      bool           `yaml:"usdc-listen"`
+	Database        DatabaseConfig `yaml:"database"`
 }
 
 func Load(path string) (*ListenerConfig, error) {

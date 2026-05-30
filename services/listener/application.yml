@@ -2,6 +2,16 @@ network: Sepolia
 safe-block-buffer: 12
 evm-block-listen: true
 usdc-listen: true
+
+database:
+  host: # redacted
+  port: # redacted
+  user: # redacted
+  password: # redacted
+  dbname: # redacted
+  sslmode: # redacted
+  timezone: # redacted
+
 rpc-urls:
   - https://0xrpc.io/sep
   - https://ethereum-sepolia-rpc.publicnode.com

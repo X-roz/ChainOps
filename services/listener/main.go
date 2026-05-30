@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"listener/config"
+	"listener/db"
 	"listener/providers"
 	"listener/service"
 )
@@ -29,6 +30,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := db.Connect(ctx, cfg.Database); err != nil {
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.EvmBlockListen {
 		if len(cfg.RPCURLs) == 0 {
