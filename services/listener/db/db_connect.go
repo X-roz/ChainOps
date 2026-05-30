@@ -37,7 +37,3 @@ func Connect(ctx context.Context, cfg config.DatabaseConfig) error {
 	slog.Info("connected to database", "host", cfg.Host, "dbname", cfg.DBName)
 	return nil
 }
-
-func DbManager() *pgxpool.Pool {
-	return pool
-}

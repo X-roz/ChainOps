@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"listener/db"
 	"listener/providers"
 	"log/slog"
 	"math/big"
@@ -17,8 +18,6 @@ import (
 )
 
 var evmLog = slog.With("listener", "[evm_listener]")
-
-var addressToMonitor = common.HexToAddress("0x32056651573c19C329c9619DAF25A72e0D8a48dC")
 
 // httpStatusErrors are substrings found in RPC error messages that indicate
 // server-side or rate-limit failures worth counting against a provider.
@@ -40,6 +39,17 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 			evmLog.Info("shutting down block listener")
 			return
 		case <-ticker.C:
+
+			rawAddresses := db.GetIndexedAddressToMonitor(ctx)
+			var addressesToMonitor []common.Address
+			for _, addr := range rawAddresses {
+				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(addr))
+			}
+
+			if len(addressesToMonitor) == 0 {
+				evmLog.Info("no indexed addresses to monitor, skipping tick")
+				continue
+			}
 
 			shouldRetry, nextProviderRetry = requireRetry(nextProviderRetry)
 			if shouldRetry {
@@ -82,9 +92,9 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 					handleProviderFailure(provider, err)
 					break
 				}
-				printTxns(block.Number(), signer, block.Transactions())
+				printTxns(block.Number(), signer, block.Transactions(), addressesToMonitor)
 				if usdcListen {
-					checkUSDCTransferWithLogs(ctx, client, block)
+					checkUSDCTransferWithLogs(ctx, client, block, addressesToMonitor)
 				}
 				lastBlock = new(big.Int).Set(blockNum)
 			}
@@ -93,15 +103,17 @@ func EvmListener(ctx context.Context, providerList []*providers.EVMProvider, saf
 	}
 }
 
-func printTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions) {
+func printTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions, addresses []common.Address) {
 	for _, tx := range txns {
-		if tx.To() != nil && *tx.To() == addressToMonitor {
-			evmLog.Info("incoming txn",
-				"block", blockNum,
-				"tx", tx.Hash().Hex(),
-				"from", tx.To().Hex(),
-				"value", tx.Value().String(),
-			)
+		for _, addr := range addresses {
+			if tx.To() != nil && *tx.To() == addr {
+				evmLog.Info("incoming txn",
+					"block", blockNum,
+					"tx", tx.Hash().Hex(),
+					"to", tx.To().Hex(),
+					"value", tx.Value().String(),
+				)
+			}
 		}
 
 		sender, err := types.Sender(signer, tx)
@@ -109,8 +121,10 @@ func printTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions) 
 			evmLog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
 			continue
 		}
-		if sender == addressToMonitor {
-			logOutgoingTxn(blockNum, sender, tx)
+		for _, addr := range addresses {
+			if sender == addr {
+				logOutgoingTxn(blockNum, sender, tx)
+			}
 		}
 	}
 }
@@ -124,15 +138,15 @@ func logOutgoingTxn(blockNum *big.Int, sender common.Address, tx *types.Transact
 	}
 
 	switch {
-	case tx.To() == nil:
+	case tx.To() == nil: // contract deployment
 		evmLog.Info("outgoing txn: contract deployment", base...)
-	case len(tx.Data()) == 0:
+	case len(tx.Data()) == 0: // Simple ETH Transfer
 		evmLog.Info("outgoing txn: ETH transfer",
 			append(base, "to", tx.To().Hex())...)
-	case tx.Value().Sign() > 0:
+	case tx.Value().Sign() > 0: // Contract call with ETH payable function state change
 		evmLog.Info("outgoing txn: contract call with ETH",
 			append(base, "to", tx.To().Hex(), "selector", fmt.Sprintf("0x%x", tx.Data()[:4]))...)
-	default:
+	default: // Contract call with no ETH but gas fee to pay, state change only
 		evmLog.Info("outgoing txn: contract call",
 			append(base, "to", tx.To().Hex(), "selector", fmt.Sprintf("0x%x", tx.Data()[:4]))...)
 	}
