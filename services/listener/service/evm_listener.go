@@ -55,27 +55,6 @@ func (el *EvmListener) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 
-			lastBlock, err := db.GetLastScannedBlock(ctx, el.networkId)
-			if err != nil {
-				evmLog.Error("failed to get last scanned block", "error", err)
-				continue
-			}
-
-			indexedAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkId)
-			if err != nil {
-				evmLog.Error("failed to get indexed addresses", "error", err)
-				continue
-			}
-			var addressesToMonitor []common.Address
-			for _, idxAddress := range indexedAddresses {
-				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(idxAddress.WalletAddress))
-			}
-
-			if len(addressesToMonitor) == 0 {
-				evmLog.Info("no indexed addresses to monitor, skipping tick")
-				continue
-			}
-
 			shouldRetry, nextProviderRetry = requireRetry(nextProviderRetry)
 			if shouldRetry {
 				recoverUnhealthyProviders(ctx, el.providerList)
@@ -94,11 +73,31 @@ func (el *EvmListener) Run(ctx context.Context) {
 				continue
 			}
 
-			// Safeblock - Take the latest block and substracts the safeBlockBuffer that will be the Safeblock
-			// Latest Block = 1000
-			// safeBlockBuffer = 12
-			// Safeblock = (1000-12) = 988
 			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(el.safeBlockBuffer))
+
+			indexedAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkId)
+			if err != nil {
+				evmLog.Error("failed to get indexed addresses", "error", err)
+				continue
+			}
+			var addressesToMonitor []common.Address
+			for _, idxAddress := range indexedAddresses {
+				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(idxAddress.WalletAddress))
+			}
+
+			if len(addressesToMonitor) == 0 {
+				evmLog.Info("no indexed addresses to monitor, advancing block pointer", "safeBlock", safeBlock)
+				if err := db.UpdateLastScannedBlock(ctx, el.networkId, safeBlock); err != nil {
+					evmLog.Error("failed to advance block pointer", "error", err)
+				}
+				continue
+			}
+
+			lastBlock, err := db.GetLastScannedBlock(ctx, el.networkId)
+			if err != nil {
+				evmLog.Error("failed to get last scanned block", "error", err)
+				continue
+			}
 
 			var from *big.Int
 			if lastBlock.Sign() == 0 {
