@@ -28,20 +28,19 @@ type EvmListener struct {
 	providerList    []*providers.EVMProvider
 	safeBlockBuffer int64
 	usdcListen      bool
-	networkKey      string
+	networkId       string
 }
 
-func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, usdcListen bool, networkKey string) *EvmListener {
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, usdcListen bool, networkId string) *EvmListener {
 	return &EvmListener{
 		providerList:    providerList,
 		safeBlockBuffer: safeBlockBuffer,
 		usdcListen:      usdcListen,
-		networkKey:      networkKey,
+		networkId:       networkId,
 	}
 }
 
 func (el *EvmListener) Run(ctx context.Context) {
-	var lastBlock *big.Int
 	signer := types.LatestSignerForChainID(el.providerList[0].ChainID())
 	nextProviderRetry := time.Now().Add(5 * time.Minute)
 	var shouldRetry bool
@@ -56,13 +55,19 @@ func (el *EvmListener) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 
-			indexAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkKey)
+			lastBlock, err := db.GetLastScannedBlock(ctx, el.networkId)
+			if err != nil {
+				evmLog.Error("failed to get last scanned block", "error", err)
+				continue
+			}
+
+			indexedAddresses, err := db.GetIndexedAddressToMonitor(ctx, el.networkId)
 			if err != nil {
 				evmLog.Error("failed to get indexed addresses", "error", err)
 				continue
 			}
 			var addressesToMonitor []common.Address
-			for _, idxAddress := range indexAddresses {
+			for _, idxAddress := range indexedAddresses {
 				addressesToMonitor = append(addressesToMonitor, common.HexToAddress(idxAddress.WalletAddress))
 			}
 
@@ -89,10 +94,14 @@ func (el *EvmListener) Run(ctx context.Context) {
 				continue
 			}
 
+			// Safeblock - Take the latest block and substracts the safeBlockBuffer that will be the Safeblock
+			// Latest Block = 1000
+			// safeBlockBuffer = 12
+			// Safeblock = (1000-12) = 988
 			safeBlock := new(big.Int).Sub(header.Number, big.NewInt(el.safeBlockBuffer))
 
 			var from *big.Int
-			if lastBlock == nil {
+			if lastBlock.Sign() == 0 {
 				from = safeBlock
 			} else {
 				from = new(big.Int).Add(lastBlock, big.NewInt(1))
@@ -118,7 +127,12 @@ func (el *EvmListener) Run(ctx context.Context) {
 				}
 				lastBlock = new(big.Int).Set(blockNum)
 			}
+
+			if err := db.UpdateLastScannedBlock(ctx, el.networkId, lastBlock); err != nil {
+				evmLog.Error("failed to persist last scanned block", "lastBlock", lastBlock, "error", err)
+			}
 			evmLog.Info("finished processing blocks", "lastBlock", lastBlock)
+
 		}
 	}
 }

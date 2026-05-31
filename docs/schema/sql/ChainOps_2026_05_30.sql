@@ -1,5 +1,4 @@
 -- Executed on 2026-05-30
-
 -- Stores supported blockchain networks with their keys and display metadata
 CREATE TABLE networks (
     id UUID PRIMARY KEY,
@@ -9,7 +8,6 @@ CREATE TABLE networks (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
-
 -- Seed: register Ethereum mainnet as the first supported network
 INSERT INTO networks (
         id,
@@ -23,7 +21,6 @@ VALUES (
         'Ethereum',
         TRUE
     );
-
 -- Tracks wallet addresses being monitored per network, with scan progress
 CREATE TABLE indexed_wallets (
     wallet_address VARCHAR(100) NOT NULL,
@@ -34,7 +31,6 @@ CREATE TABLE indexed_wallets (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (wallet_address, network_id)
 );
-
 -- Seed: start monitoring a USDC-related wallet on Ethereum mainnet
 INSERT INTO indexed_wallets (
         wallet_address,
@@ -48,7 +44,6 @@ SELECT '0x32056651573c19C329c9619DAF25A72e0D8a48dC',
     NULL
 FROM networks n
 WHERE n.network_key = 'ethereum';
-
 -- Seed: register Sepolia testnet as a supported network
 INSERT INTO networks (
         id,
@@ -62,7 +57,6 @@ VALUES (
         'Sepolia',
         TRUE
     );
-
 -- Seed: start monitoring the same wallet on Sepolia testnet
 INSERT INTO indexed_wallets (
         wallet_address,
@@ -76,3 +70,7 @@ SELECT '0x32056651573c19C329c9619DAF25A72e0D8a48dC',
     NULL
 FROM networks n
 WHERE n.network_key = 'sepolia';
+-- Tracks the highest block number scanned on this network; used to resume
+-- listening from where the previous session left off instead of re-scanning from block 0
+ALTER TABLE networks
+ADD COLUMN last_scanned_block BIGINT NOT NULL DEFAULT 0;
