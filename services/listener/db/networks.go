@@ -25,6 +25,7 @@ func GetNetworkIDByKey(ctx context.Context, networkKey string) (string, error) {
 		netLog.Error("failed to query network", "key", networkKey, "error", err)
 		return "", err
 	}
+	netLog.Info("network resolved", "key", networkKey, "id", id)
 	return id, nil
 }
 
@@ -44,6 +45,7 @@ func GetLastScannedBlock(ctx context.Context, networkId string) (*big.Int, error
 		netLog.Error("failed to query last scanned block", "networkId", networkId, "error", err)
 		return nil, err
 	}
+	netLog.Info("last scanned block fetched", "networkId", networkId, "block", block)
 	return new(big.Int).SetInt64(block), nil
 }
 
@@ -56,5 +58,6 @@ func UpdateLastScannedBlock(ctx context.Context, networkId string, block *big.In
 		netLog.Error("failed to update last scanned block", "networkId", networkId, "error", err)
 		return err
 	}
+	netLog.Info("last scanned block updated", "networkId", networkId, "block", block)
 	return nil
 }

@@ -112,6 +112,7 @@ func (el *EvmListener) Run(ctx context.Context) {
 			}
 
 			evmLog.Info("processing block range", "from", from, "to", safeBlock)
+			start := time.Now()
 
 			for blockNum := new(big.Int).Set(from); blockNum.Cmp(safeBlock) <= 0; blockNum.Add(blockNum, big.NewInt(1)) {
 				block, err := client.BlockByNumber(ctx, new(big.Int).Set(blockNum))
@@ -130,7 +131,7 @@ func (el *EvmListener) Run(ctx context.Context) {
 			if err := db.UpdateLastScannedBlock(ctx, el.networkId, lastBlock); err != nil {
 				evmLog.Error("failed to persist last scanned block", "lastBlock", lastBlock, "error", err)
 			}
-			evmLog.Info("finished processing blocks", "lastBlock", lastBlock)
+			evmLog.Info("finished processing blocks", "lastBlock", lastBlock, "duration", time.Since(start).Round(time.Millisecond))
 
 		}
 	}

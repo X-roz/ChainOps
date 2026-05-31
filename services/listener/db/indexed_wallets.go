@@ -55,5 +55,6 @@ func GetIndexedAddressToMonitor(ctx context.Context, networkId string) ([]Indexe
 		return nil, err
 	}
 
+	walletLog.Info("indexed wallets fetched", "networkId", networkId, "count", len(addresses))
 	return addresses, nil
 }
