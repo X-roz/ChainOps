@@ -12,26 +12,24 @@ type IndexedAddress struct {
 	WalletAddress         string
 	NetworkID             string
 	ActiveSubscriberCount int64
-	LastScannedBlock      *int64
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
 
 // GetIndexedAddressToMonitor returns all actively watched wallets for the given
 // network. networkKey is matched case-insensitively against networks.network_key.
-func GetIndexedAddressToMonitor(ctx context.Context, networkKey string) ([]IndexedAddress, error) {
+func GetIndexedAddressToMonitor(ctx context.Context, networkId string) ([]IndexedAddress, error) {
 	rows, err := pool.Query(ctx,
-		`SELECT iw.wallet_address, iw.network_id,
-		        iw.active_subscriber_count,
-		        iw.last_scanned_block, iw.created_at, iw.updated_at
-		 FROM indexed_wallets iw
-		 JOIN networks n ON n.id = iw.network_id
-		 WHERE iw.active_subscriber_count > 0
-		   AND n.network_key = $1`,
-		networkKey,
+		`SELECT wallet_address, network_id,
+		        active_subscriber_count,
+		        created_at, updated_at
+		 FROM indexed_wallets
+		 WHERE network_id = $1
+		   AND active_subscriber_count > 0`,
+		networkId,
 	)
 	if err != nil {
-		walletLog.Error("failed to query indexed wallets", "network", networkKey, "error", err)
+		walletLog.Error("failed to query indexed wallets", "network", networkId, "error", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -43,7 +41,6 @@ func GetIndexedAddressToMonitor(ctx context.Context, networkKey string) ([]Index
 			&ia.WalletAddress,
 			&ia.NetworkID,
 			&ia.ActiveSubscriberCount,
-			&ia.LastScannedBlock,
 			&ia.CreatedAt,
 			&ia.UpdatedAt,
 		); err != nil {

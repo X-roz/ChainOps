@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	_ "listener/logger"
 	"listener/config"
 	"listener/db"
+	_ "listener/logger"
 	"listener/providers"
 	"listener/service"
 )
@@ -39,7 +39,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := db.GetNetworkIDByKey(ctx, cfg.Network); err != nil {
+	networkId, err := db.GetNetworkIDByKey(ctx, cfg.Network)
+	if err != nil {
 		mainLog.Error("network not found or inactive in database, stopping listener", "network", cfg.Network)
 		os.Exit(1)
 	}
@@ -56,7 +57,7 @@ func main() {
 			os.Exit(1)
 		}
 		mainLog.Info("rpc providers connected", "count", len(providerList))
-		go service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.UsdcListen, cfg.Network).Run(ctx)
+		go service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.UsdcListen, networkId).Run(ctx)
 	}
 
 	<-ctx.Done()
