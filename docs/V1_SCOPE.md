@@ -185,9 +185,11 @@ All gated by active paid subscription. Computed by live SQL aggregation over `wa
 
 ### 4.12 Operational dashboard
 
-- Listener checkpoint per network (`global_last_scanned_block`)
+- Listener checkpoint per network (`networks.last_scanned_block`)
 - Listener lag (chain head − checkpoint), per network
 - Listener effective safe head (chain head − SAFE_BLOCK_BUFFER), per network
+- Active `network_listener_sessions` count, last session duration
+- Open `wallet_monitoring_sessions` count
 - RPC error rate, retry counts, provider fallback events
 - Queue depth (RabbitMQ)
 - DB write throughput
@@ -204,7 +206,7 @@ All gated by active paid subscription. Computed by live SQL aggregation over `wa
 
 | Service | Language | Responsibility |
 |---|---|---|
-| `listener-go` | Go | Network-agnostic; per-instance configured with one network's RPC and asset addresses, including `SAFE_BLOCK_BUFFER`. Polls RPC every 60s. Reads `indexed_wallets` for globally-active wallets to scan. Advances from `global_last_scanned_block` to (chain head − `SAFE_BLOCK_BUFFER`) — never emits events from blocks shallower than the buffer. Captures ETH transfers, USDC transfers, and all outgoing txs for tracked wallets. Emits activity messages to MQ. Persists per-network scan progress. No reorg detection in V1. |
+| `listener-go` | Go | Network-agnostic; per-instance configured (YAML) with one network's RPC URL list, `SAFE_BLOCK_BUFFER`, `MAX_BLOCKS_PER_TICK`, and feature toggles (`evm-block-listen`, `usdc-listen`). On startup: validates network exists in `networks` table, validates all RPC providers report the same chain ID, creates a `network_listener_sessions` row. Polls RPC every 60s. Reads active wallets from `indexed_wallets` per tick. Advances from `networks.last_scanned_block` to (chain head − `SAFE_BLOCK_BUFFER`), capped at `MAX_BLOCKS_PER_TICK` per tick. Captures: incoming/outgoing native ETH, classified outgoing tx types (contract deployment / ETH transfer / contract call with ETH / contract call), and USDC `Transfer` events (mint / incoming / outgoing / burn) via `FilterLogs`. Persists per-network checkpoint to `networks.last_scanned_block` after each tick. Closes its `network_listener_sessions` row on graceful shutdown with the final processed block. Currently emits to stdout (v0.3); MQ publishing pending (v0.4). No reorg detection in V1. |
 | `ledger-api-java` | Java / Spring Boot | Owns audit ledger, user/auth model, subscription state, lifecycle scheduled jobs, reporting/export module. SIWE nonce + signature verification. Consumes events from MQ. Listens for `Subscribed` events from on-chain contract. Serves REST APIs. |
 | `smart-contracts` | Solidity / Foundry | One subscription contract per network. V1 deploys one on Sepolia. |
 | `frontend` | React | Dashboard, feed, lifecycle UI (trial countdown, dormant notice), wallet connect (SIWE), subscription flow (approve + subscribe), filters, export trigger. |
@@ -276,11 +278,13 @@ The full schema is at `docs/schema/ChainOps_Schema.sql`. Summary:
 | `users` | Internal identity (UUID). Holds `account_status`, `current_plan`. |
 | `auth_wallets` | Wallets allowed to sign in via SIWE. V1: exactly one per user (enforced in app layer). |
 | `user_tracked_wallets` | Wallets a user has registered for monitoring. V1: 1 (free/trial) or 5 (premium). |
-| `networks` | Supported chains. V1 seed: Sepolia. |
+| `networks` | Supported chains. Carries the listener's per-network checkpoint via `last_scanned_block`. V1 seed: Ethereum, Sepolia. |
 | `assets` | Asset definitions (ETH, USDC). |
 | `asset_deployments` | (asset × network) → contract address + decimals. V1 seed: ETH/Sepolia (native), USDC/Sepolia. |
-| `indexed_wallets` | Global listener state. PK: `(wallet_address, network_id)`. Holds `active_subscriber_count`, `is_globally_active`, `global_last_scanned_block`. |
-| `wallet_activities` | Audit ledger. Stores observed on-chain events with block hash (audit only), direction, counterparty, gas data. No state column in V1 (safe-block buffer model). |
+| `indexed_wallets` | Globally-watched wallet rows. UUID PK; UNIQUE `(wallet_address, network_id)`. Carries `active_subscriber_count`. Used by the listener as the per-tick fetch of "which wallets to scan." |
+| `network_listener_sessions` | Per-process listener lifecycle: each listener run creates a row with `from_block`, `started_at`, transitions to `CLOSED` with `to_block` and `completed_at` on graceful shutdown. Used to detect crashed runs and reason about gap coverage over time. |
+| `wallet_monitoring_sessions` | Per-wallet monitoring session: a session represents an unbroken window in which a specific wallet was being indexed. New session is opened when a wallet enters indexing; closed when the wallet leaves (e.g. account DORMANT or unsubscribed). Carries `session_number` (monotonic per wallet), `started_block`, `ended_block`, `status` (`OPEN` / `LISTENING` / `CLOSED`). Powers the "monitoring paused from X to Y" UX on reactivation. |
+| `wallet_activities` | Audit ledger (not yet implemented). Will store observed on-chain events with block hash (audit only), direction, counterparty, gas data. No state column in V1 (safe-block buffer model). |
 | `subscriptions` | Cached projection of on-chain subscription state. On-chain contract is source of truth. |
 | `plan_features` | Capability flags per plan. V1: one row (`PREMIUM`). |
 
@@ -288,15 +292,23 @@ The full schema is at `docs/schema/ChainOps_Schema.sql`. Summary:
 
 These fixes to the current draft schema must be applied before any service code is written:
 
-- **`wallet_activities` is missing critical columns.** Add: `block_hash` (provenance), `direction` (in/out), `counterparty_address`, `gas_used`, `effective_gas_price`. Untyped `metadata JSONB` is not a substitute for queryable columns the analytics views depend on. **Do NOT add `state` or `confirmation_count`** — V1 uses the safe-block buffer model (§4.6) and does not track transaction state transitions.
-- **`wallet_activities.amount`** should be `NUMERIC(78, 0)` to hold full uint256 raw on-chain values. Decimals are applied at read time via `asset_deployments.decimals`. Never mix display amounts and raw amounts in the same column.
-- **`indexed_wallets` primary key** must be `(wallet_address, network_id)`, not `wallet_address` alone. The same wallet on different chains is a different row.
-- **Indexes required:** `wallet_activities (wallet_address, network_id, occurred_at DESC)`, `wallet_activities (tx_hash)` for dedup, `user_tracked_wallets (user_id) WHERE is_removed = FALSE`.
+**Implemented in current schema (2026-05-30, 2026-05-31):**
+
+- `networks` table with `last_scanned_block` column for per-network listener checkpoint.
+- `indexed_wallets` with UUID PK and `UNIQUE(wallet_address, network_id)`.
+- `network_listener_sessions` for per-process listener lifecycle.
+- `wallet_monitoring_sessions` for per-wallet indexing-window tracking with `monitoring_session_status` ENUM.
+
+**Still required before ledger-api implementation:**
+
+- **`wallet_activities` table** does not yet exist. When created, it must include: `block_hash` (provenance), `direction` (in/out), `counterparty_address`, `gas_used`, `effective_gas_price`. Untyped `metadata JSONB` is not a substitute for queryable columns the analytics views depend on. **Do NOT add `state` or `confirmation_count`** — V1 uses the safe-block buffer model (§4.6).
+- **`wallet_activities.amount`** must be `NUMERIC(78, 0)` to hold full uint256 raw on-chain values. Decimals are applied at read time via `asset_deployments.decimals`. Never mix display amounts and raw amounts in the same column.
+- **Required indexes (when `wallet_activities` lands):** `(wallet_address, network_id, occurred_at DESC)`, `(tx_hash)` for dedup, and `user_tracked_wallets (user_id) WHERE is_removed = FALSE`.
 - **`users.primary_wallet_address`** is redundant with `auth_wallets WHERE role='OWNER'`. Drop it; use `auth_wallets` as the source of truth.
 - **`subscriptions`** needs a constraint preventing multiple `ACTIVE` rows per user — partial unique index on `(user_id) WHERE subscription_status = 'ACTIVE'`. Or refactor to one row per user with a state column.
 - **`user_tracked_wallets.UNIQUE(user_id, wallet_address)`** should be partial: `WHERE is_removed = FALSE`. Otherwise a user cannot re-add a previously-removed wallet.
-- **Address and tx_hash columns:** size to EVM exactly (`VARCHAR(42)` and `VARCHAR(66)`) or store as `BYTEA`. The current `VARCHAR(100)` / `VARCHAR(255)` is wasteful and signals non-EVM intent we don't have.
-- **`backfill_jobs` table:** remove from V1 schema entirely. Add in V2 alongside the backfill worker. Adding a table later is a pure forward-compatible migration.
+- **Address and tx_hash columns:** the current `VARCHAR(100)` is wasteful for EVM addresses (42 chars). Either tighten to `VARCHAR(42)` / `VARCHAR(66)` or move to `BYTEA`. Accepted as-is for now; revisit if storage becomes a concern.
+- **`backfill_jobs` table:** still V2-only.
 
 ---
 
@@ -399,6 +411,10 @@ These fixes to the current draft schema must be applied before any service code 
 - **2026-05-24 — Backfill cut entirely from V1.** DORMANT users (trial or paid) accept the data gap on reactivation. UI displays gap notification. Backfill is V2.
 - **2026-05-24 — DORMANT lifecycle enforced** by a scheduled job (daily cadence). EXPIRED → DORMANT grace window pending (Open Question).
 - **2026-05-26 — Finality model: safe-block buffer instead of state machine.** Listener buffers `SAFE_BLOCK_BUFFER` blocks (Sepolia: 12) and only emits events from depths ≥ that buffer. Ledger treats emitted events as final. No `seen/confirmed/reverted` state machine, no reorg handling, no `block_advanced` or `reorg` messages in V1. Latency cost (~2.4 min on Sepolia) accepted in exchange for radically simpler ledger semantics. Deep reorgs (depth > buffer) are an accepted V1 limitation. State machine preserved in V2+ roadmap.
+- **2026-05-31 — Listener checkpoint lives on `networks.last_scanned_block`.** Single column on the catalog table rather than a separate `listener_checkpoints` table. Decision accepts that a future second listener type (e.g. subscription-event listener) would need its own column or its own table at that point; not solved upfront in V1.
+- **2026-05-31 — Two-tier session tracking.** `network_listener_sessions` records each listener process lifecycle (startup → graceful shutdown), used as operational telemetry to detect crashes and reason about coverage. `wallet_monitoring_sessions` records per-wallet indexing windows with `OPEN`/`LISTENING`/`CLOSED` states and monotonic `session_number`, designed to power the "monitoring paused from X to Y" UX during DORMANT/ACTIVE transitions.
+- **2026-05-31 — Per-tick block-range cap (`MAX_BLOCKS_PER_TICK`, default 100).** Listener processes at most N blocks per 60s tick. If catching up from a long downtime, the listener takes multiple ticks. Preserves tick cadence over fast catch-up.
+- **2026-05-31 — Provider abstraction with `Provider` interface and `EVMProvider` concrete type.** Anticipates non-EVM chains in V2+. `ConnectEVM` validates all RPC providers report the same chain ID at boot.
 
 ---
 
@@ -439,7 +455,7 @@ These fixes to the current draft schema must be applied before any service code 
 
 1. A user can sign in via SIWE on Sepolia. Account is created, FREE_TRIAL activated, sign-in wallet auto-registered as tracked wallet.
 2. Within ~3 minutes of a Sepolia ETH or USDC transfer involving a tracked wallet, the activity appears in the user's feed (`SAFE_BLOCK_BUFFER × block_time` + polling/processing overhead).
-3. Listener correctly buffers `SAFE_BLOCK_BUFFER` blocks behind chain head; no events from shallower blocks are ever emitted (verified by inspecting the message stream against chain head).
+3. Listener correctly buffers `SAFE_BLOCK_BUFFER` blocks behind chain head; no events from shallower blocks are ever emitted (verified by inspecting the message stream against chain head). Listener correctly resumes from `networks.last_scanned_block` after restart and opens/closes `network_listener_sessions` rows around its lifecycle.
 4. Free / trial user can register at most 1 tracked wallet; attempts beyond this are rejected with a clear UI message and CTA to subscribe.
 5. Premium user can register up to 5 tracked wallets, each requiring an ownership-proof signature.
 6. Two users tracking the same wallet result in exactly one entry in `indexed_wallets` and one set of `wallet_activities` rows, fanned out to both at read time.
