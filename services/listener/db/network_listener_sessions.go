@@ -8,6 +8,7 @@ import (
 
 var sessionLog = slog.With("db", "[sessions]")
 
+// Default listener entry status will be ACTIVE
 func CreateListenerSession(ctx context.Context, networkId string, fromBlock int64) (string, error) {
 	var id string
 	err := pool.QueryRow(ctx,

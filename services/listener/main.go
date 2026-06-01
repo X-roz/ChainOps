@@ -57,7 +57,7 @@ func main() {
 			os.Exit(1)
 		}
 		mainLog.Info("rpc providers connected", "count", len(providerList))
-		go service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.UsdcListen, networkId).Run(ctx)
+		go service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId).Run(ctx)
 	}
 
 	<-ctx.Done()

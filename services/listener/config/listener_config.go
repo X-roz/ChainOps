@@ -18,12 +18,13 @@ type DatabaseConfig struct {
 }
 
 type ListenerConfig struct {
-	Network         string         `yaml:"network"`
-	RPCURLs         []string       `yaml:"rpc-urls"`
-	SafeBlockBuffer int64          `yaml:"safe-block-buffer"`
-	EvmBlockListen  bool           `yaml:"evm-block-listen"`
-	UsdcListen      bool           `yaml:"usdc-listen"`
-	Database        DatabaseConfig `yaml:"database"`
+	Network          string         `yaml:"network"`
+	RPCURLs          []string       `yaml:"rpc-urls"`
+	SafeBlockBuffer  int64          `yaml:"safe-block-buffer"`
+	MaxBlocksPerTick int64          `yaml:"max-blocks-per-tick"`
+	EvmBlockListen   bool           `yaml:"evm-block-listen"`
+	UsdcListen       bool           `yaml:"usdc-listen"`
+	Database         DatabaseConfig `yaml:"database"`
 }
 
 func Load(path string) (*ListenerConfig, error) {

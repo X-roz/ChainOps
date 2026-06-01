@@ -1,5 +1,6 @@
 network: Sepolia
 safe-block-buffer: 12
+max-blocks-per-tick: 100
 evm-block-listen: true
 usdc-listen: true
 

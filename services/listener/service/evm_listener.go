@@ -25,18 +25,20 @@ var evmLog = slog.With("listener", "[evm_listener]")
 var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 
 type EvmListener struct {
-	providerList    []*providers.EVMProvider
-	safeBlockBuffer int64
-	usdcListen      bool
-	networkId       string
+	providerList     []*providers.EVMProvider
+	safeBlockBuffer  int64
+	maxBlocksPerTick int64
+	usdcListen       bool
+	networkId        string
 }
 
-func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, usdcListen bool, networkId string) *EvmListener {
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string) *EvmListener {
 	return &EvmListener{
-		providerList:    providerList,
-		safeBlockBuffer: safeBlockBuffer,
-		usdcListen:      usdcListen,
-		networkId:       networkId,
+		providerList:     providerList,
+		safeBlockBuffer:  safeBlockBuffer,
+		maxBlocksPerTick: maxBlocksPerTick,
+		usdcListen:       usdcListen,
+		networkId:        networkId,
 	}
 }
 
@@ -44,6 +46,21 @@ func (el *EvmListener) Run(ctx context.Context) {
 	signer := types.LatestSignerForChainID(el.providerList[0].ChainID())
 	nextProviderRetry := time.Now().Add(5 * time.Minute)
 	var shouldRetry bool
+	var lastProcessedBlock *big.Int
+
+	// Create a session on startup using the current chain tip as the reference point.
+	// A separate background context is not needed here — startup context is still live.
+	var sessionId string
+	if client, _, ok := getHealthyClient(el.providerList); ok {
+		if header, err := client.HeaderByNumber(ctx, nil); err == nil {
+			if id, err := db.CreateListenerSession(ctx, el.networkId, header.Number.Int64()); err == nil {
+				sessionId = id
+			}
+		}
+	}
+	if sessionId == "" {
+		evmLog.Warn("could not create listener session at startup, continuing without session tracking")
+	}
 
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -52,6 +69,14 @@ func (el *EvmListener) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			evmLog.Info("shutting down block listener")
+			if sessionId != "" {
+				// ctx is already cancelled — use a fresh context for the shutdown write.
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := db.CloseListenerSession(shutdownCtx, sessionId, lastProcessedBlock); err != nil {
+					evmLog.Error("failed to close listener session on shutdown", "sessionId", sessionId, "error", err)
+				}
+			}
 			return
 		case <-ticker.C:
 
@@ -111,6 +136,12 @@ func (el *EvmListener) Run(ctx context.Context) {
 				continue
 			}
 
+			// Cap to maxBlocksPerTick — prevents unbounded catchup on restart.
+			cappedEnd := new(big.Int).Add(from, big.NewInt(el.maxBlocksPerTick-1))
+			if cappedEnd.Cmp(safeBlock) < 0 {
+				safeBlock = cappedEnd
+			}
+
 			evmLog.Info("processing block range", "from", from, "to", safeBlock)
 			start := time.Now()
 
@@ -130,6 +161,8 @@ func (el *EvmListener) Run(ctx context.Context) {
 
 			if err := db.UpdateLastScannedBlock(ctx, el.networkId, lastBlock); err != nil {
 				evmLog.Error("failed to persist last scanned block", "lastBlock", lastBlock, "error", err)
+			} else {
+				lastProcessedBlock = lastBlock
 			}
 			evmLog.Info("finished processing blocks", "lastBlock", lastBlock, "duration", time.Since(start).Round(time.Millisecond))
 
