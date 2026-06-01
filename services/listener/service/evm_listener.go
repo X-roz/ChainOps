@@ -46,14 +46,14 @@ func (el *EvmListener) Run(ctx context.Context) {
 	signer := types.LatestSignerForChainID(el.providerList[0].ChainID())
 	nextProviderRetry := time.Now().Add(5 * time.Minute)
 	var shouldRetry bool
-	var lastProcessedBlock *big.Int
+	var lastBlock *big.Int  // last successfully processed block — used for session close
+	var fromBlock *big.Int  // start of next tick's range — advances after every tick
 
-	// Create a session on startup using the current chain tip as the reference point.
-	// A separate background context is not needed here — startup context is still live.
 	var sessionId string
 	if client, _, ok := getHealthyClient(el.providerList); ok {
 		if header, err := client.HeaderByNumber(ctx, nil); err == nil {
-			if id, err := db.CreateListenerSession(ctx, el.networkId, header.Number.Int64()); err == nil {
+			fromBlock = new(big.Int).Sub(header.Number, big.NewInt(el.safeBlockBuffer))
+			if id, err := db.CreateListenerSession(ctx, el.networkId, fromBlock.Int64()); err == nil {
 				sessionId = id
 			}
 		}
@@ -70,10 +70,9 @@ func (el *EvmListener) Run(ctx context.Context) {
 		case <-ctx.Done():
 			evmLog.Info("shutting down block listener")
 			if sessionId != "" {
-				// ctx is already cancelled — use a fresh context for the shutdown write.
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if err := db.CloseListenerSession(shutdownCtx, sessionId, lastProcessedBlock); err != nil {
+				if err := db.CloseListenerSession(shutdownCtx, sessionId, lastBlock); err != nil {
 					evmLog.Error("failed to close listener session on shutdown", "sessionId", sessionId, "error", err)
 				}
 			}
@@ -112,31 +111,25 @@ func (el *EvmListener) Run(ctx context.Context) {
 
 			if len(addressesToMonitor) == 0 {
 				evmLog.Info("no indexed addresses to monitor, advancing block pointer", "safeBlock", safeBlock)
+				lastBlock = new(big.Int).Set(safeBlock)
+				fromBlock = new(big.Int).Add(safeBlock, big.NewInt(1))
 				if err := db.UpdateLastScannedBlock(ctx, el.networkId, safeBlock); err != nil {
 					evmLog.Error("failed to advance block pointer", "error", err)
 				}
 				continue
 			}
 
-			lastBlock, err := db.GetLastScannedBlock(ctx, el.networkId)
-			if err != nil {
-				evmLog.Error("failed to get last scanned block", "error", err)
-				continue
-			}
-
-			var from *big.Int
-			if lastBlock.Sign() == 0 {
-				from = safeBlock
-			} else {
-				from = new(big.Int).Add(lastBlock, big.NewInt(1))
+			// fromBlock is set at startup; fall back to current safeBlock if session creation failed.
+			from := fromBlock
+			if from == nil {
+				from = new(big.Int).Set(safeBlock)
 			}
 
 			if from.Cmp(safeBlock) > 0 {
-				evmLog.Info("no new confirmed blocks", "lastBlock", lastBlock, "safeBlock", safeBlock)
+				evmLog.Info("no new confirmed blocks", "from", from, "safeBlock", safeBlock)
 				continue
 			}
 
-			// Cap to maxBlocksPerTick — prevents unbounded catchup on restart.
 			cappedEnd := new(big.Int).Add(from, big.NewInt(el.maxBlocksPerTick-1))
 			if cappedEnd.Cmp(safeBlock) < 0 {
 				safeBlock = cappedEnd
@@ -159,10 +152,11 @@ func (el *EvmListener) Run(ctx context.Context) {
 				lastBlock = new(big.Int).Set(blockNum)
 			}
 
-			if err := db.UpdateLastScannedBlock(ctx, el.networkId, lastBlock); err != nil {
-				evmLog.Error("failed to persist last scanned block", "lastBlock", lastBlock, "error", err)
-			} else {
-				lastProcessedBlock = lastBlock
+			if lastBlock != nil {
+				fromBlock = new(big.Int).Add(lastBlock, big.NewInt(1))
+				if err := db.UpdateLastScannedBlock(ctx, el.networkId, lastBlock); err != nil {
+					evmLog.Error("failed to persist last scanned block", "lastBlock", lastBlock, "error", err)
+				}
 			}
 			evmLog.Info("finished processing blocks", "lastBlock", lastBlock, "duration", time.Since(start).Round(time.Millisecond))
 

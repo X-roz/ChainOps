@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"listener/config"
@@ -46,6 +47,8 @@ func main() {
 	}
 	mainLog.Info("network validated", "network", cfg.Network)
 
+	var wg sync.WaitGroup
+
 	if cfg.EvmBlockListen {
 		if len(cfg.RPCURLs) == 0 {
 			mainLog.Error("evm-block-listen is enabled but no rpc-urls configured")
@@ -57,9 +60,16 @@ func main() {
 			os.Exit(1)
 		}
 		mainLog.Info("rpc providers connected", "count", len(providerList))
-		go service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId).Run(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId).Run(ctx)
+		}()
 	}
 
 	<-ctx.Done()
+	mainLog.Info("signal received, waiting for listeners to shut down")
+	wg.Wait()
+	mainLog.Info("all listeners stopped")
 
 }
