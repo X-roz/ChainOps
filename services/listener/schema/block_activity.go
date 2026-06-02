@@ -36,6 +36,13 @@ type Asset struct {
 	ContractAddress string `json:"contract_address,omitempty"`
 }
 
+type GasDetails struct {
+	FeePaid           string `json:"fee_paid"`
+	FeeAsset          string `json:"fee_asset"`
+	GasUsed           uint64 `json:"gas_used"`
+	EffectiveGasPrice string `json:"effective_gas_price,omitempty"`
+}
+
 type ActivityEvent struct {
 	WalletAddress string         `json:"wallet_address"`
 	TxHash        string         `json:"tx_hash"`
@@ -45,6 +52,7 @@ type ActivityEvent struct {
 	ToAddress     string         `json:"to_address"`
 	Amount        string         `json:"amount"`
 	Asset         *Asset         `json:"asset,omitempty"`
+	GasDetails    *GasDetails    `json:"gas,omitempty"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
