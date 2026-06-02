@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"math/big"
 
+	"listener/schema"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -18,67 +20,93 @@ var usdcAddress = common.HexToAddress("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C723
 
 var transferTopic = crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
 
-func checkUSDCTransferWithLogs(ctx context.Context, client *ethclient.Client, block *types.Block, addresses []common.Address) {
+var usdcAsset = &schema.Asset{
+	AssetType:       "ERC20",
+	Symbol:          "USDC",
+	ContractAddress: usdcAddress.Hex(),
+}
+
+func collectUSDCEvents(ctx context.Context, client *ethclient.Client, block *types.Block, addresses []common.Address) []schema.ActivityEvent {
 	if len(addresses) == 0 {
-		return
+		return nil
 	}
 
-	query := ethereum.FilterQuery{
+	logs, err := client.FilterLogs(ctx, ethereum.FilterQuery{
 		FromBlock: block.Number(),
 		ToBlock:   block.Number(),
 		Addresses: []common.Address{usdcAddress},
 		Topics:    [][]common.Hash{{transferTopic}},
-	}
-
-	logs, err := client.FilterLogs(ctx, query)
+	})
 	if err != nil {
 		usdcLog.Error("failed to filter USDC logs", "block", block.Number(), "error", err)
-		return
+		return nil
 	}
 
+	var events []schema.ActivityEvent
 	for _, vlog := range logs {
-		processUSDCLog(vlog, addresses)
+		events = append(events, collectUSDCLogEvents(vlog, addresses)...)
 	}
+	return events
 }
 
-func processUSDCLog(vlog types.Log, addresses []common.Address) {
+func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.ActivityEvent {
 	from := common.BytesToAddress(vlog.Topics[1].Bytes())
 	to := common.BytesToAddress(vlog.Topics[2].Bytes())
-	value := new(big.Int).SetBytes(vlog.Data).String()
+	amount := new(big.Int).SetBytes(vlog.Data).String()
 	zero := common.Address{}
 
+	var events []schema.ActivityEvent
 	for _, addr := range addresses {
+		var event *schema.ActivityEvent
 		switch {
 		case to == addr && from == zero:
-			usdcLog.Info("USDC mint",
-				"block", vlog.BlockNumber,
-				"txHash", vlog.TxHash.String(),
-				"to", to,
-				"value", value,
-			)
+			event = &schema.ActivityEvent{
+				WalletAddress: addr.Hex(),
+				TxHash:        vlog.TxHash.Hex(),
+				EventType:     schema.EventTypeTokenTransfer,
+				ActivityType:  schema.ActivityTypeMint,
+				FromAddress:   from.Hex(),
+				ToAddress:     to.Hex(),
+				Amount:        amount,
+				Asset:         usdcAsset,
+			}
 		case to == addr:
-			usdcLog.Info("USDC incoming transfer",
-				"block", vlog.BlockNumber,
-				"txHash", vlog.TxHash.String(),
-				"from", from,
-				"to", to,
-				"value", value,
-			)
+			event = &schema.ActivityEvent{
+				WalletAddress: addr.Hex(),
+				TxHash:        vlog.TxHash.Hex(),
+				EventType:     schema.EventTypeTokenTransfer,
+				ActivityType:  schema.ActivityTypeIncoming,
+				FromAddress:   from.Hex(),
+				ToAddress:     to.Hex(),
+				Amount:        amount,
+				Asset:         usdcAsset,
+			}
 		case from == addr && to == zero:
-			usdcLog.Info("USDC burn",
-				"block", vlog.BlockNumber,
-				"txHash", vlog.TxHash.String(),
-				"from", from,
-				"value", value,
-			)
+			event = &schema.ActivityEvent{
+				WalletAddress: addr.Hex(),
+				TxHash:        vlog.TxHash.Hex(),
+				EventType:     schema.EventTypeTokenTransfer,
+				ActivityType:  schema.ActivityTypeBurn,
+				FromAddress:   from.Hex(),
+				ToAddress:     to.Hex(),
+				Amount:        amount,
+				Asset:         usdcAsset,
+			}
 		case from == addr:
-			usdcLog.Info("USDC outgoing transfer",
-				"block", vlog.BlockNumber,
-				"txHash", vlog.TxHash.String(),
-				"from", from,
-				"to", to,
-				"value", value,
-			)
+			event = &schema.ActivityEvent{
+				WalletAddress: addr.Hex(),
+				TxHash:        vlog.TxHash.Hex(),
+				EventType:     schema.EventTypeTokenTransfer,
+				ActivityType:  schema.ActivityTypeOutgoing,
+				FromAddress:   from.Hex(),
+				ToAddress:     to.Hex(),
+				Amount:        amount,
+				Asset:         usdcAsset,
+			}
+		}
+		if event != nil {
+			events = append(events, *event)
 		}
 	}
+	return events
 }
