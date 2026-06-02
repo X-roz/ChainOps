@@ -7,6 +7,7 @@ import (
 	"listener/db"
 	_ "listener/logger"
 	"listener/providers"
+	"listener/schema"
 	"log/slog"
 	"math/big"
 	"net"
@@ -138,6 +139,7 @@ func (el *EvmListener) Run(ctx context.Context) {
 			evmLog.Info("processing block range", "from", from, "to", safeBlock)
 			start := time.Now()
 
+			var totalEvents int
 			for blockNum := new(big.Int).Set(from); blockNum.Cmp(safeBlock) <= 0; blockNum.Add(blockNum, big.NewInt(1)) {
 				block, err := client.BlockByNumber(ctx, new(big.Int).Set(blockNum))
 				if err != nil {
@@ -145,10 +147,21 @@ func (el *EvmListener) Run(ctx context.Context) {
 					handleProviderFailure(provider, err)
 					break
 				}
-				printTxns(block.Number(), signer, block.Transactions(), addressesToMonitor)
-				if el.usdcListen {
-					checkUSDCTransferWithLogs(ctx, client, block, addressesToMonitor)
+
+				msg := schema.BlockActivityMessage{
+					NetworkID:      el.networkId,
+					BlockNumber:    block.NumberU64(),
+					BlockHash:      block.Hash().Hex(),
+					BlockTimestamp: time.Unix(int64(block.Time()), 0),
 				}
+				msg.Events = append(msg.Events, collectTxnEvents(signer, block, addressesToMonitor)...)
+				if el.usdcListen {
+					msg.Events = append(msg.Events, collectUSDCEvents(ctx, client, block, addressesToMonitor)...)
+				}
+				if len(msg.Events) > 0 {
+					evmLog.Info("block activity detected", "block", msg.BlockNumber, "events", len(msg.Events))
+				}
+				totalEvents += len(msg.Events)
 				lastBlock = new(big.Int).Set(blockNum)
 			}
 
@@ -158,59 +171,65 @@ func (el *EvmListener) Run(ctx context.Context) {
 					evmLog.Error("failed to persist last scanned block", "lastBlock", lastBlock, "error", err)
 				}
 			}
-			evmLog.Info("finished processing blocks", "lastBlock", lastBlock, "duration", time.Since(start).Round(time.Millisecond))
+			evmLog.Info("finished processing blocks", "lastBlock", lastBlock, "events", totalEvents, "duration", time.Since(start).Round(time.Millisecond))
 
 		}
 	}
 }
 
-func printTxns(blockNum *big.Int, signer types.Signer, txns types.Transactions, addresses []common.Address) {
-	for _, tx := range txns {
+var ethAsset = &schema.Asset{AssetType: "NATIVE", Symbol: "ETH"}
+
+func collectTxnEvents(signer types.Signer, block *types.Block, addresses []common.Address) []schema.ActivityEvent {
+	var events []schema.ActivityEvent
+
+	for _, tx := range block.Transactions() {
 		for _, addr := range addresses {
 			if tx.To() != nil && *tx.To() == addr {
-				evmLog.Info("incoming txn",
-					"block", blockNum,
-					"tx", tx.Hash().Hex(),
-					"to", tx.To().Hex(),
-					"value", tx.Value().String(),
-				)
+				events = append(events, schema.ActivityEvent{
+					WalletAddress: addr.Hex(),
+					TxHash:        tx.Hash().Hex(),
+					EventType:     schema.EventTypeNativeTransfer,
+					ActivityType:  schema.ActivityTypeIncoming,
+					ToAddress:     tx.To().Hex(),
+					Amount:        tx.Value().String(),
+					Asset:         ethAsset,
+				})
 			}
 		}
 
 		sender, err := types.Sender(signer, tx)
 		if err != nil {
-			evmLog.Error("failed to recover sender", "block", blockNum, "tx", tx.Hash().Hex(), "error", err)
+			evmLog.Error("failed to recover sender", "block", block.Number(), "tx", tx.Hash().Hex(), "error", err)
 			continue
 		}
+
 		for _, addr := range addresses {
-			if sender == addr {
-				logOutgoingTxn(blockNum, sender, tx)
+			if sender != addr {
+				continue
 			}
+			base := schema.ActivityEvent{
+				WalletAddress: addr.Hex(),
+				TxHash:        tx.Hash().Hex(),
+				ActivityType:  schema.ActivityTypeOutgoing,
+				FromAddress:   sender.Hex(),
+				Amount:        tx.Value().String(),
+				Asset:         ethAsset,
+			}
+			switch {
+			case tx.To() == nil:
+				base.EventType = schema.EventTypeContractDeployment
+			case len(tx.Data()) == 0:
+				base.EventType = schema.EventTypeNativeTransfer
+				base.ToAddress = tx.To().Hex()
+			default:
+				base.EventType = schema.EventTypeContractInteraction
+				base.ToAddress = tx.To().Hex()
+				base.Metadata = map[string]any{"selector": fmt.Sprintf("0x%x", tx.Data()[:4])}
+			}
+			events = append(events, base)
 		}
 	}
-}
-
-func logOutgoingTxn(blockNum *big.Int, sender common.Address, tx *types.Transaction) {
-	base := []any{
-		"block", blockNum,
-		"tx", tx.Hash().Hex(),
-		"from", sender.Hex(),
-		"value", tx.Value().String(),
-	}
-
-	switch {
-	case tx.To() == nil: // contract deployment
-		evmLog.Info("outgoing txn: contract deployment", base...)
-	case len(tx.Data()) == 0: // Simple ETH Transfer
-		evmLog.Info("outgoing txn: ETH transfer",
-			append(base, "to", tx.To().Hex())...)
-	case tx.Value().Sign() > 0: // Contract call with ETH payable function state change
-		evmLog.Info("outgoing txn: contract call with ETH",
-			append(base, "to", tx.To().Hex(), "selector", fmt.Sprintf("0x%x", tx.Data()[:4]))...)
-	default: // Contract call with no ETH but gas fee to pay, state change only
-		evmLog.Info("outgoing txn: contract call",
-			append(base, "to", tx.To().Hex(), "selector", fmt.Sprintf("0x%x", tx.Data()[:4]))...)
-	}
+	return events
 }
 
 func getHealthyClient(providerList []*providers.EVMProvider) (*ethclient.Client, *providers.EVMProvider, bool) {
