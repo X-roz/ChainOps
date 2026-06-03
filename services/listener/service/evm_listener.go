@@ -34,11 +34,18 @@ type EvmListener struct {
 	maxBlocksPerTick int64
 	usdcListen       bool
 	networkId        string
+	knownContracts   map[common.Address]struct{}
 }
 
-func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string) *EvmListener {
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string, knownTokenContracts []string) *EvmListener {
 	ethAsset.AssetType = "NATIVE"
 	ethAsset.Symbol = nativeAsset
+
+	knownContracts := make(map[common.Address]struct{}, len(knownTokenContracts))
+	for _, addr := range knownTokenContracts {
+		knownContracts[common.HexToAddress(addr)] = struct{}{}
+	}
+
 	return &EvmListener{
 		providerList:     providerList,
 		safeBlockBuffer:  safeBlockBuffer,
@@ -46,6 +53,7 @@ func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64
 		usdcListen:       usdcListen,
 		networkId:        networkId,
 		nativeAsset:      nativeAsset,
+		knownContracts:   knownContracts,
 	}
 }
 
@@ -161,7 +169,7 @@ func (el *EvmListener) Run(ctx context.Context) {
 					BlockHash:      block.Hash().Hex(),
 					BlockTimestamp: time.Unix(int64(block.Time()), 0),
 				}
-				msg.Events = append(msg.Events, collectTxnEvents(signer, client, block, addressesToMonitor)...)
+				msg.Events = append(msg.Events, collectTxnEvents(signer, client, block, addressesToMonitor, el.knownContracts)...)
 				if el.usdcListen {
 					msg.Events = append(msg.Events, collectUSDCEvents(ctx, client, block, addressesToMonitor)...)
 				}
@@ -184,7 +192,7 @@ func (el *EvmListener) Run(ctx context.Context) {
 	}
 }
 
-func collectTxnEvents(signer types.Signer, client *ethclient.Client, block *types.Block, addresses []common.Address) []schema.ActivityEvent {
+func collectTxnEvents(signer types.Signer, client *ethclient.Client, block *types.Block, addresses []common.Address, knownContracts map[common.Address]struct{}) []schema.ActivityEvent {
 	var events []schema.ActivityEvent
 
 	for _, tx := range block.Transactions() {
@@ -214,6 +222,12 @@ func collectTxnEvents(signer types.Signer, client *ethclient.Client, block *type
 		for _, addr := range addresses {
 			if sender != addr {
 				continue
+			}
+			// Skip if tx targets a known token contract — its log processor emits the event.
+			if tx.To() != nil {
+				if _, isKnown := knownContracts[*tx.To()]; isKnown {
+					continue
+				}
 			}
 			gasDetails := &schema.GasDetails{}
 
