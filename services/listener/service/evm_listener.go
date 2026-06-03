@@ -25,30 +25,37 @@ var evmLog = slog.With("listener", "[evm_listener]")
 // server-side or rate-limit failures worth counting against a provider.
 var httpStatusErrors = []string{"429", "500", "502", "503", "504"}
 
+var ethAsset = &schema.Asset{}
+
 type EvmListener struct {
 	providerList     []*providers.EVMProvider
+	nativeAsset      string
 	safeBlockBuffer  int64
 	maxBlocksPerTick int64
 	usdcListen       bool
 	networkId        string
 }
 
-func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string) *EvmListener {
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string) *EvmListener {
+	ethAsset.AssetType = "NATIVE"
+	ethAsset.Symbol = nativeAsset
 	return &EvmListener{
 		providerList:     providerList,
 		safeBlockBuffer:  safeBlockBuffer,
 		maxBlocksPerTick: maxBlocksPerTick,
 		usdcListen:       usdcListen,
 		networkId:        networkId,
+		nativeAsset:      nativeAsset,
 	}
 }
 
 func (el *EvmListener) Run(ctx context.Context) {
+
 	signer := types.LatestSignerForChainID(el.providerList[0].ChainID())
 	nextProviderRetry := time.Now().Add(5 * time.Minute)
 	var shouldRetry bool
-	var lastBlock *big.Int  // last successfully processed block — used for session close
-	var fromBlock *big.Int  // start of next tick's range — advances after every tick
+	var lastBlock *big.Int // last successfully processed block — used for session close
+	var fromBlock *big.Int // start of next tick's range — advances after every tick
 
 	var sessionId string
 	if client, _, ok := getHealthyClient(el.providerList); ok {
@@ -154,7 +161,7 @@ func (el *EvmListener) Run(ctx context.Context) {
 					BlockHash:      block.Hash().Hex(),
 					BlockTimestamp: time.Unix(int64(block.Time()), 0),
 				}
-				msg.Events = append(msg.Events, collectTxnEvents(signer, block, addressesToMonitor)...)
+				msg.Events = append(msg.Events, collectTxnEvents(signer, client, block, addressesToMonitor)...)
 				if el.usdcListen {
 					msg.Events = append(msg.Events, collectUSDCEvents(ctx, client, block, addressesToMonitor)...)
 				}
@@ -177,13 +184,12 @@ func (el *EvmListener) Run(ctx context.Context) {
 	}
 }
 
-var ethAsset = &schema.Asset{AssetType: "NATIVE", Symbol: "ETH"}
-
-func collectTxnEvents(signer types.Signer, block *types.Block, addresses []common.Address) []schema.ActivityEvent {
+func collectTxnEvents(signer types.Signer, client *ethclient.Client, block *types.Block, addresses []common.Address) []schema.ActivityEvent {
 	var events []schema.ActivityEvent
 
 	for _, tx := range block.Transactions() {
 		for _, addr := range addresses {
+			// Incoming native transfer: gas details Optional
 			if tx.To() != nil && *tx.To() == addr {
 				events = append(events, schema.ActivityEvent{
 					WalletAddress: addr.Hex(),
@@ -193,6 +199,7 @@ func collectTxnEvents(signer types.Signer, block *types.Block, addresses []commo
 					ToAddress:     tx.To().Hex(),
 					Amount:        tx.Value().String(),
 					Asset:         ethAsset,
+					GasDetails:    nil,
 				})
 			}
 		}
@@ -203,10 +210,18 @@ func collectTxnEvents(signer types.Signer, block *types.Block, addresses []commo
 			continue
 		}
 
+		// Outgoing transactions (native transfer, contract interaction, or deployment): gas details required
 		for _, addr := range addresses {
 			if sender != addr {
 				continue
 			}
+			gasDetails := &schema.GasDetails{}
+
+			transactionReceipt := getReceiptTransaction(context.Background(), client, tx.Hash())
+			if transactionReceipt != nil {
+				gasDetails = getGasDetails(transactionReceipt)
+			}
+
 			base := schema.ActivityEvent{
 				WalletAddress: addr.Hex(),
 				TxHash:        tx.Hash().Hex(),
@@ -214,22 +229,54 @@ func collectTxnEvents(signer types.Signer, block *types.Block, addresses []commo
 				FromAddress:   sender.Hex(),
 				Amount:        tx.Value().String(),
 				Asset:         ethAsset,
+				GasDetails:    gasDetails,
 			}
 			switch {
 			case tx.To() == nil:
 				base.EventType = schema.EventTypeContractDeployment
+				if transactionReceipt != nil {
+					base.Metadata = map[string]any{
+						"status":           transactionReceipt.Status,
+						"contract_address": transactionReceipt.ContractAddress.Hex(),
+					}
+				}
 			case len(tx.Data()) == 0:
 				base.EventType = schema.EventTypeNativeTransfer
 				base.ToAddress = tx.To().Hex()
 			default:
 				base.EventType = schema.EventTypeContractInteraction
 				base.ToAddress = tx.To().Hex()
-				base.Metadata = map[string]any{"selector": fmt.Sprintf("0x%x", tx.Data()[:4])}
+				if transactionReceipt != nil {
+					base.Metadata = map[string]any{
+						"selector": fmt.Sprintf("0x%x", tx.Data()[:4]),
+						"status":   transactionReceipt.Status,
+					}
+				} else {
+					base.Metadata = map[string]any{"selector": fmt.Sprintf("0x%x", tx.Data()[:4])}
+				}
 			}
 			events = append(events, base)
 		}
 	}
 	return events
+}
+
+func getGasDetails(receipt *types.Receipt) *schema.GasDetails {
+	return &schema.GasDetails{
+		FeePaid:           new(big.Int).Mul(receipt.EffectiveGasPrice, new(big.Int).SetUint64(receipt.GasUsed)).String(),
+		FeeAsset:          ethAsset.Symbol,
+		GasUsed:           receipt.GasUsed,
+		EffectiveGasPrice: receipt.EffectiveGasPrice.String(),
+	}
+}
+
+func getReceiptTransaction(ctx context.Context, client *ethclient.Client, txHash common.Hash) *types.Receipt {
+	receipt, err := client.TransactionReceipt(ctx, txHash)
+	if err != nil {
+		evmLog.Error("failed to fetch transaction receipt", "txHash", txHash.Hex(), "error", err)
+		return nil
+	}
+	return receipt
 }
 
 func getHealthyClient(providerList []*providers.EVMProvider) (*ethclient.Client, *providers.EVMProvider, bool) {
