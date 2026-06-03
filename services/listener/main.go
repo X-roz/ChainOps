@@ -63,7 +63,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId).Run(ctx)
+			service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId, cfg.NativeAsset).Run(ctx)
 		}()
 	}
 
