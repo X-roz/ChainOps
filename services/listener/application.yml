@@ -1,4 +1,5 @@
 network: Sepolia
+native-asset: ETH
 safe-block-buffer: 12
 max-blocks-per-tick: 100
 evm-block-listen: true

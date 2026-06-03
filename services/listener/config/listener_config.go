@@ -20,6 +20,7 @@ type DatabaseConfig struct {
 type ListenerConfig struct {
 	Network          string         `yaml:"network"`
 	RPCURLs          []string       `yaml:"rpc-urls"`
+	NativeAsset      string         `yaml:"native-asset"`
 	SafeBlockBuffer  int64          `yaml:"safe-block-buffer"`
 	MaxBlocksPerTick int64          `yaml:"max-blocks-per-tick"`
 	EvmBlockListen   bool           `yaml:"evm-block-listen"`
