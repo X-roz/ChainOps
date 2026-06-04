@@ -42,18 +42,57 @@ func collectUSDCEvents(ctx context.Context, client *ethclient.Client, block *typ
 		return nil
 	}
 
+	// Build a set of monitored addresses for O(1) lookup.
+	addrSet := make(map[common.Address]struct{}, len(addresses))
+	for _, a := range addresses {
+		addrSet[a] = struct{}{}
+	}
+
+	// Pre-fetch receipts only for transactions where a monitored wallet is the
+	// sender. Receipts carry gas details that are attached to outgoing events.
+	receipts := make(map[common.Hash]*types.Receipt)
+
+	for _, vlog := range logs {
+		if _, alreadyFetched := receipts[vlog.TxHash]; alreadyFetched {
+			continue
+		}
+		from := common.BytesToAddress(vlog.Topics[1].Bytes())
+		if _, isMonitored := addrSet[from]; !isMonitored {
+			continue
+		}
+		receipt, err := client.TransactionReceipt(ctx, vlog.TxHash)
+		if err != nil {
+			usdcLog.Warn("failed to fetch receipt for outgoing tx", "tx", vlog.TxHash.Hex(), "error", err)
+			receipts[vlog.TxHash] = nil // mark attempted so we don't retry
+			continue
+		}
+		receipts[vlog.TxHash] = receipt
+	}
+
 	var events []schema.ActivityEvent
 	for _, vlog := range logs {
-		events = append(events, collectUSDCLogEvents(vlog, addresses)...)
+		events = append(events, collectUSDCLogEvents(vlog, addresses, receipts[vlog.TxHash])...)
 	}
 	return events
 }
 
-func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.ActivityEvent {
+func collectUSDCLogEvents(vlog types.Log, addresses []common.Address, receipt *types.Receipt) []schema.ActivityEvent {
 	from := common.BytesToAddress(vlog.Topics[1].Bytes())
 	to := common.BytesToAddress(vlog.Topics[2].Bytes())
 	amount := new(big.Int).SetBytes(vlog.Data).String()
 	zero := common.Address{}
+
+	// log_index and tx_index allow consumers to reconstruct the exact position of
+	// this event within the block without re-fetching the receipt.
+	metadata := map[string]any{
+		"log_index": vlog.Index,
+		"tx_index":  vlog.TxIndex,
+	}
+
+	var gasDetails *schema.GasDetails
+	if receipt != nil {
+		gasDetails = buildGasDetails(receipt)
+	}
 
 	var events []schema.ActivityEvent
 	for _, addr := range addresses {
@@ -69,6 +108,7 @@ func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.A
 				ToAddress:     to.Hex(),
 				Amount:        amount,
 				Asset:         usdcAsset,
+				Metadata:      metadata,
 			}
 		case to == addr:
 			event = &schema.ActivityEvent{
@@ -80,6 +120,7 @@ func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.A
 				ToAddress:     to.Hex(),
 				Amount:        amount,
 				Asset:         usdcAsset,
+				Metadata:      metadata,
 			}
 		case from == addr && to == zero:
 			event = &schema.ActivityEvent{
@@ -91,6 +132,8 @@ func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.A
 				ToAddress:     to.Hex(),
 				Amount:        amount,
 				Asset:         usdcAsset,
+				GasDetails:    gasDetails,
+				Metadata:      metadata,
 			}
 		case from == addr:
 			event = &schema.ActivityEvent{
@@ -102,6 +145,8 @@ func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.A
 				ToAddress:     to.Hex(),
 				Amount:        amount,
 				Asset:         usdcAsset,
+				GasDetails:    gasDetails,
+				Metadata:      metadata,
 			}
 		}
 		if event != nil {
@@ -109,4 +154,20 @@ func collectUSDCLogEvents(vlog types.Log, addresses []common.Address) []schema.A
 		}
 	}
 	return events
+}
+
+// buildGasDetails derives gas cost fields from a transaction receipt.
+// fee_paid is denominated in the network's native currency (wei for EVM chains).
+func buildGasDetails(receipt *types.Receipt) *schema.GasDetails {
+	effectiveGasPrice := receipt.EffectiveGasPrice
+	if effectiveGasPrice == nil {
+		effectiveGasPrice = new(big.Int)
+	}
+	feePaid := new(big.Int).Mul(effectiveGasPrice, new(big.Int).SetUint64(receipt.GasUsed))
+	return &schema.GasDetails{
+		FeePaid:           feePaid.String(),
+		FeeAsset:          "ETH",
+		GasUsed:           receipt.GasUsed,
+		EffectiveGasPrice: effectiveGasPrice.String(),
+	}
 }
