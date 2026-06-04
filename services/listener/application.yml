@@ -5,6 +5,11 @@ max-blocks-per-tick: 100
 evm-block-listen: true
 usdc-listen: true
 
+# Contract addresses whose transfers are handled by dedicated log processors.
+# Transactions to these addresses are skipped at the tx level to avoid duplicate events.
+known-token-contracts:
+  - "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238" # USDC (Sepolia)
+
 database:
   host: # redacted
   port: # redacted
