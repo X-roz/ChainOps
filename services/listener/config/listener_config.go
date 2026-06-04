@@ -25,7 +25,7 @@ type ListenerConfig struct {
 	MaxBlocksPerTick    int64          `yaml:"max-blocks-per-tick"`
 	EvmBlockListen      bool           `yaml:"evm-block-listen"`
 	UsdcListen          bool           `yaml:"usdc-listen"`
-	KnownTokenContracts []string       `yaml:"known-token-contracts"`
+	KnownTokenContracts map[string]string `yaml:"known-token-contracts"`
 	Database            DatabaseConfig `yaml:"database"`
 }
 

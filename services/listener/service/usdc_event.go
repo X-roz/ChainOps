@@ -16,18 +16,32 @@ import (
 
 var usdcLog = slog.With("listener", "[usdc_event]")
 
-var usdcAddress = common.HexToAddress("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238")
-
 var transferTopic = crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
 
-var usdcAsset = &schema.Asset{
-	AssetType:       "ERC20",
-	Symbol:          "USDC",
-	ContractAddress: usdcAddress.Hex(),
+var (
+	usdcAddress common.Address
+	usdcAsset   *schema.Asset
+)
+
+// InitTokenContracts populates token contract addresses from config once at startup.
+// Keyed by symbol (e.g. "USDC") so individual processors can look up their address
+// without parsing the full map on every tick.
+func InitTokenContracts(contracts map[string]string) {
+	addr, ok := contracts["USDC"]
+	if !ok {
+		usdcLog.Warn("USDC not found in known-token-contracts; USDC event collection will be skipped")
+		return
+	}
+	usdcAddress = common.HexToAddress(addr)
+	usdcAsset = &schema.Asset{
+		AssetType:       "ERC20",
+		Symbol:          "USDC",
+		ContractAddress: usdcAddress.Hex(),
+	}
 }
 
 func collectUSDCEvents(ctx context.Context, client *ethclient.Client, block *types.Block, addresses []common.Address) []schema.ActivityEvent {
-	if len(addresses) == 0 {
+	if usdcAsset == nil || len(addresses) == 0 {
 		return nil
 	}
 

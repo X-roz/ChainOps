@@ -49,6 +49,8 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	service.InitTokenContracts(cfg.KnownTokenContracts)
+
 	if cfg.EvmBlockListen {
 		if len(cfg.RPCURLs) == 0 {
 			mainLog.Error("evm-block-listen is enabled but no rpc-urls configured")

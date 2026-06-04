@@ -37,7 +37,7 @@ type EvmListener struct {
 	knownContracts   map[common.Address]struct{}
 }
 
-func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string, knownTokenContracts []string) *EvmListener {
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string, knownTokenContracts map[string]string) *EvmListener {
 	ethAsset.AssetType = "NATIVE"
 	ethAsset.Symbol = nativeAsset
 
