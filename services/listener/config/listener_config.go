@@ -17,16 +17,22 @@ type DatabaseConfig struct {
 	Timezone string `yaml:"timezone"`
 }
 
+type PublisherConfig struct {
+	NatsURL string `yaml:"nats-url"`
+	Subject string `yaml:"subject"`
+}
+
 type ListenerConfig struct {
-	Network             string         `yaml:"network"`
-	RPCURLs             []string       `yaml:"rpc-urls"`
-	NativeAsset         string         `yaml:"native-asset"`
-	SafeBlockBuffer     int64          `yaml:"safe-block-buffer"`
-	MaxBlocksPerTick    int64          `yaml:"max-blocks-per-tick"`
-	EvmBlockListen      bool           `yaml:"evm-block-listen"`
-	UsdcListen          bool           `yaml:"usdc-listen"`
+	Network             string            `yaml:"network"`
+	RPCURLs             []string          `yaml:"rpc-urls"`
+	NativeAsset         string            `yaml:"native-asset"`
+	SafeBlockBuffer     int64             `yaml:"safe-block-buffer"`
+	MaxBlocksPerTick    int64             `yaml:"max-blocks-per-tick"`
+	EvmBlockListen      bool              `yaml:"evm-block-listen"`
+	UsdcListen          bool              `yaml:"usdc-listen"`
 	KnownTokenContracts map[string]string `yaml:"known-token-contracts"`
-	Database            DatabaseConfig `yaml:"database"`
+	Publisher           PublisherConfig   `yaml:"publisher"`
+	Database            DatabaseConfig    `yaml:"database"`
 }
 
 func Load(path string) (*ListenerConfig, error) {

@@ -13,6 +13,7 @@ import (
 	"listener/db"
 	_ "listener/logger"
 	"listener/providers"
+	"listener/publisher"
 	"listener/service"
 )
 
@@ -51,6 +52,18 @@ func main() {
 
 	service.InitTokenContracts(cfg.KnownTokenContracts)
 
+	var pub *publisher.Publisher
+	if cfg.Publisher.NatsURL != "" {
+		var err error
+		pub, err = publisher.New(cfg.Publisher.NatsURL, cfg.Publisher.Subject)
+		if err != nil {
+			mainLog.Error("failed to connect to NATS", "error", err)
+			os.Exit(1)
+		}
+		defer pub.Close()
+		mainLog.Info("publisher connected", "subject", cfg.Publisher.Subject)
+	}
+
 	if cfg.EvmBlockListen {
 		if len(cfg.RPCURLs) == 0 {
 			mainLog.Error("evm-block-listen is enabled but no rpc-urls configured")
@@ -65,7 +78,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId, cfg.NativeAsset, cfg.KnownTokenContracts).Run(ctx)
+			service.NewEvmListener(providerList, cfg.SafeBlockBuffer, cfg.MaxBlocksPerTick, cfg.UsdcListen, networkId, cfg.NativeAsset, cfg.KnownTokenContracts, pub).Run(ctx)
 		}()
 	}
 
