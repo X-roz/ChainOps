@@ -7,6 +7,7 @@ import (
 	"listener/db"
 	_ "listener/logger"
 	"listener/providers"
+	"listener/publisher"
 	"listener/schema"
 	"log/slog"
 	"math/big"
@@ -35,9 +36,10 @@ type EvmListener struct {
 	usdcListen       bool
 	networkId        string
 	knownContracts   map[common.Address]struct{}
+	pub              *publisher.Publisher
 }
 
-func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string, knownTokenContracts map[string]string) *EvmListener {
+func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64, maxBlocksPerTick int64, usdcListen bool, networkId string, nativeAsset string, knownTokenContracts map[string]string, pub *publisher.Publisher) *EvmListener {
 	ethAsset.AssetType = "NATIVE"
 	ethAsset.Symbol = nativeAsset
 
@@ -54,6 +56,7 @@ func NewEvmListener(providerList []*providers.EVMProvider, safeBlockBuffer int64
 		networkId:        networkId,
 		nativeAsset:      nativeAsset,
 		knownContracts:   knownContracts,
+		pub:              pub,
 	}
 }
 
@@ -175,6 +178,11 @@ func (el *EvmListener) Run(ctx context.Context) {
 				}
 				if len(msg.Events) > 0 {
 					evmLog.Info("block activity detected", "block", msg.BlockNumber, "events", len(msg.Events))
+					if el.pub != nil {
+						if err := el.pub.Publish(ctx, msg); err != nil {
+							evmLog.Error("failed to publish block activity", "block", msg.BlockNumber, "error", err)
+						}
+					}
 				}
 				totalEvents += len(msg.Events)
 				lastBlock = new(big.Int).Set(blockNum)
