@@ -10,14 +10,18 @@ usdc-listen: true
 known-token-contracts:
   USDC: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238" # Sepolia
 
+publisher:
+  nats-url: "nats://localhost:4222"
+  subject: "chainops.block.activity"
+
 database:
-  host: # redacted
-  port: # redacted
-  user: # redacted
-  password: # redacted
-  dbname: # redacted
-  sslmode: # redacted
-  timezone: # redacted
+  host: localhost
+  port: 5432
+  user: postgres
+  password: 6380880446
+  dbname: chainops
+  sslmode: disable
+  timezone: UTC
 
 rpc-urls:
   - https://0xrpc.io/sep
