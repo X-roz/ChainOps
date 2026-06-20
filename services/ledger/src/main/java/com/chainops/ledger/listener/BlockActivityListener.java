@@ -3,6 +3,7 @@ package com.chainops.ledger.listener;
 import com.chainops.ledger.config.NatsProperties;
 import com.chainops.ledger.schema.BlockActivityMessage;
 import com.chainops.ledger.service.WalletActivityService;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
@@ -13,8 +14,6 @@ import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
 import io.nats.client.PushSubscribeOptions;
 import lombok.extern.log4j.Log4j2;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
@@ -83,7 +82,8 @@ public class BlockActivityListener implements SmartLifecycle {
 
     private void handle(Message msg) {
         try {
-            BlockActivityMessage event = mapper.readValue(msg.getData(), BlockActivityMessage.class);
+            BlockActivityMessage event;
+            event = mapper.readValue(msg.getData(), BlockActivityMessage.class);
 
             String batchIndex = msg.getHeaders() != null ? msg.getHeaders().getFirst("X-Batch-Index") : "?";
             String totalBatches = msg.getHeaders() != null ? msg.getHeaders().getFirst("X-Total-Batches") : "?";
@@ -94,12 +94,10 @@ public class BlockActivityListener implements SmartLifecycle {
                     event.getEvents() == null ? 0 : event.getEvents().size(),
                     batchIndex,
                     totalBatches);
-
             process(event);
-
             msg.ack();
         } catch (Exception e) {
-            log.error("Service = BlockActivityListener, failed to process message: {}", e.getMessage(), e);
+            log.error("Service = BlockActivityListener, failed to persist : {}", e.getMessage(), e);
             msg.nak();
         }
     }
