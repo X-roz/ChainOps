@@ -2,6 +2,7 @@ package com.chainops.ledger.listener;
 
 import com.chainops.ledger.config.NatsProperties;
 import com.chainops.ledger.schema.BlockActivityMessage;
+import com.chainops.ledger.service.WalletActivityService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
@@ -11,29 +12,32 @@ import io.nats.client.api.AckPolicy;
 import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
 import io.nats.client.PushSubscribeOptions;
+import lombok.extern.log4j.Log4j2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
+@Log4j2
 @Component
 public class BlockActivityListener implements SmartLifecycle {
-
-    private static final Logger log = LoggerFactory.getLogger(BlockActivityListener.class);
 
     private final Connection nc;
     private final JetStream js;
     private final NatsProperties props;
     private final ObjectMapper mapper;
+    private final WalletActivityService walletActivityService;
 
     private Dispatcher dispatcher;
     private volatile boolean running = false;
 
-    public BlockActivityListener(Connection nc, JetStream js, NatsProperties props, ObjectMapper mapper) {
+    public BlockActivityListener(Connection nc, JetStream js, NatsProperties props, ObjectMapper mapper,
+                                 WalletActivityService walletActivityService) {
         this.nc = nc;
         this.js = js;
         this.props = props;
         this.mapper = mapper;
+        this.walletActivityService = walletActivityService;
     }
 
     @Override
@@ -101,14 +105,6 @@ public class BlockActivityListener implements SmartLifecycle {
     }
 
     private void process(BlockActivityMessage msg) {
-        // TODO: persist events to ledger storage
-        if (msg.getEvents() == null) return;
-        msg.getEvents().forEach(event ->
-                log.debug("Service = BlockActivityListener, {} {} wallet={} tx={} amount={}",
-                        event.getEventType(),
-                        event.getActivityType(),
-                        event.getWalletAddress(),
-                        event.getTxHash(),
-                        event.getAmount()));
+        walletActivityService.persistAll(msg);
     }
 }
