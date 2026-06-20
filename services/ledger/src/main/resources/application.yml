@@ -11,6 +11,6 @@ spring:
     driver-class-name: org.postgresql.Driver
 
 nats:
-  url: nats://localhost:4222
+  url: #redacted
   subject: chainops.block.activity
-  consumer: ledger-consumer
+  consumer: ledger-ops
