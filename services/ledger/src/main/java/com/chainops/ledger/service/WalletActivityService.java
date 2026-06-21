@@ -8,6 +8,7 @@ import com.chainops.ledger.repository.IndexedWalletRepository;
 import com.chainops.ledger.repository.WalletActivityRepository;
 import com.chainops.ledger.schema.ActivityEvent;
 import com.chainops.ledger.schema.BlockActivityMessage;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
@@ -22,15 +23,11 @@ import java.util.UUID;
 
 @Log4j2
 @Service
+@RequiredArgsConstructor
 public class WalletActivityService {
 
     private final WalletActivityRepository repository;
     private final IndexedWalletRepository indexedWalletRepository;
-
-    public WalletActivityService(WalletActivityRepository repository, IndexedWalletRepository indexedWalletRepository) {
-        this.repository = repository;
-        this.indexedWalletRepository = indexedWalletRepository;
-    }
 
     @Transactional
     public void persistAll(BlockActivityMessage message) {

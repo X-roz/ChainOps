@@ -13,12 +13,14 @@ import io.nats.client.api.AckPolicy;
 import io.nats.client.api.ConsumerConfiguration;
 import io.nats.client.api.DeliverPolicy;
 import io.nats.client.PushSubscribeOptions;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 @Log4j2
 @Component
+@RequiredArgsConstructor
 public class BlockActivityListener implements SmartLifecycle {
 
     private final Connection nc;
@@ -29,15 +31,6 @@ public class BlockActivityListener implements SmartLifecycle {
 
     private Dispatcher dispatcher;
     private volatile boolean running = false;
-
-    public BlockActivityListener(Connection nc, JetStream js, NatsProperties props, ObjectMapper mapper,
-                                 WalletActivityService walletActivityService) {
-        this.nc = nc;
-        this.js = js;
-        this.props = props;
-        this.mapper = mapper;
-        this.walletActivityService = walletActivityService;
-    }
 
     @Override
     public void start() {
