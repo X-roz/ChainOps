@@ -2,7 +2,9 @@ package com.chainops.ledger.service;
 
 import com.chainops.ledger.entity.ActivityType;
 import com.chainops.ledger.entity.EventType;
+import com.chainops.ledger.entity.IndexedWallet;
 import com.chainops.ledger.entity.WalletActivity;
+import com.chainops.ledger.repository.IndexedWalletRepository;
 import com.chainops.ledger.repository.WalletActivityRepository;
 import com.chainops.ledger.schema.ActivityEvent;
 import com.chainops.ledger.schema.BlockActivityMessage;
@@ -12,10 +14,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Log4j2
@@ -23,9 +25,11 @@ import java.util.UUID;
 public class WalletActivityService {
 
     private final WalletActivityRepository repository;
+    private final IndexedWalletRepository indexedWalletRepository;
 
-    public WalletActivityService(WalletActivityRepository repository) {
+    public WalletActivityService(WalletActivityRepository repository, IndexedWalletRepository indexedWalletRepository) {
         this.repository = repository;
+        this.indexedWalletRepository = indexedWalletRepository;
     }
 
     @Transactional
@@ -41,14 +45,17 @@ public class WalletActivityService {
         }
 
         try {
+            UUID networkId = UUID.fromString(message.getNetworkId());
             LocalDateTime blockTimestamp = LocalDateTime.ofInstant(message.getBlockTimestamp(), ZoneOffset.UTC);
             List<WalletActivity> activities;
             activities = message.getEvents().stream()
-                    .map(event -> toEntity(event, message.getBlockNumber(), blockTimestamp))
+                    .map(event -> toEntity(event, networkId, message.getBlockNumber(), blockTimestamp))
+                    .filter(Optional::isPresent)
+                    .map(Optional::get)
                     .toList();
             repository.saveAll(activities);
-            log.info("Service = WalletActivityService, persisted {} activities for block={} network={}",
-                    activities.size(), message.getBlockNumber(), message.getNetworkId());
+            log.info("Service = WalletActivityService, persisted {} of {} activities for block={} network={}",
+                    activities.size(), message.getEvents().size(), message.getBlockNumber(), message.getNetworkId());
         } catch (DataAccessException e) {
             log.error("Service = WalletActivityService, DB error persisting block={} network={}: {}",
                     message.getBlockNumber(), message.getNetworkId(), e.getMessage(), e);
@@ -60,12 +67,15 @@ public class WalletActivityService {
         }
     }
 
-    private WalletActivity toEntity(ActivityEvent event, long blockNumber, LocalDateTime blockTimestamp) {
+    private Optional<WalletActivity> toEntity(ActivityEvent event, UUID networkId, long blockNumber, LocalDateTime blockTimestamp) {
         try {
             WalletActivity activity = new WalletActivity();
 
-            // Deterministic UUID from wallet address until an indexed_wallets lookup is in place
-            activity.setIndexedWalletId(UUID.nameUUIDFromBytes(event.getWalletAddress().getBytes(StandardCharsets.UTF_8)));
+            IndexedWallet indexedWallet = indexedWalletRepository
+                    .findByWalletAddressAndNetworkId(event.getWalletAddress(), networkId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Indexed wallet not found for wallet=" + event.getWalletAddress() + " network=" + networkId));
+            activity.setIndexedWalletId(indexedWallet.getId());
             activity.setTxHash(event.getTxHash());
             activity.setBlockNumber(blockNumber);
             activity.setBlockTimestamp(blockTimestamp);
@@ -87,15 +97,15 @@ public class WalletActivityService {
                 activity.setFeeAsset(event.getGas().getFeeAsset());
             }
 
-            return activity;
-        } catch (IllegalArgumentException e) {
-            log.error("Service = WalletActivityService, invalid enum or number value wallet={} tx={} block={}: {}",
+            return Optional.of(activity);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            log.error("Service = WalletActivityService, skipping event - invalid value wallet={} tx={} block={}: {}",
                     event.getWalletAddress(), event.getTxHash(), blockNumber, e.getMessage(), e);
-            throw e;
+            return Optional.empty();
         } catch (Exception e) {
-            log.error("Service = WalletActivityService, failed to map event wallet={} tx={} block={}: {}",
+            log.error("Service = WalletActivityService, skipping event - failed to map wallet={} tx={} block={}: {}",
                     event.getWalletAddress(), event.getTxHash(), blockNumber, e.getMessage(), e);
-            throw e;
+            return Optional.empty();
         }
     }
 }

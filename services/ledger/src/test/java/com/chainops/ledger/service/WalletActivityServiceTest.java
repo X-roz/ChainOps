@@ -2,7 +2,9 @@ package com.chainops.ledger.service;
 
 import com.chainops.ledger.entity.ActivityType;
 import com.chainops.ledger.entity.EventType;
+import com.chainops.ledger.entity.IndexedWallet;
 import com.chainops.ledger.entity.WalletActivity;
+import com.chainops.ledger.repository.IndexedWalletRepository;
 import com.chainops.ledger.repository.WalletActivityRepository;
 import com.chainops.ledger.schema.ActivityEvent;
 import com.chainops.ledger.schema.Asset;
@@ -18,17 +20,23 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,14 +44,18 @@ import static org.mockito.Mockito.when;
 class WalletActivityServiceTest {
 
     @Mock WalletActivityRepository repository;
+    @Mock IndexedWalletRepository indexedWalletRepository;
 
     @InjectMocks WalletActivityService service;
 
     private BlockActivityMessage message;
     private ActivityEvent event;
+    private UUID networkId;
 
     @BeforeEach
     void setUp() {
+        networkId = UUID.randomUUID();
+
         event = new ActivityEvent();
         event.setWalletAddress("0xWallet123");
         event.setTxHash("0xTxHash456");
@@ -54,11 +66,22 @@ class WalletActivityServiceTest {
         event.setAmount("1.5");
 
         message = new BlockActivityMessage();
-        message.setNetworkId("ethereum");
+        message.setNetworkId(networkId.toString());
         message.setBlockNumber(200L);
         message.setBlockHash("0xBlockHash");
         message.setBlockTimestamp(Instant.parse("2024-01-15T10:30:00Z"));
         message.setEvents(List.of(event));
+
+        // default: every wallet/network pair resolves to a deterministic indexed wallet
+        lenient().when(indexedWalletRepository.findByWalletAddressAndNetworkId(anyString(), any(UUID.class)))
+                .thenAnswer(invocation -> {
+                    String walletAddress = invocation.getArgument(0);
+                    IndexedWallet indexedWallet = new IndexedWallet();
+                    indexedWallet.setId(UUID.nameUUIDFromBytes(walletAddress.getBytes(StandardCharsets.UTF_8)));
+                    indexedWallet.setWalletAddress(walletAddress);
+                    indexedWallet.setNetworkId(invocation.getArgument(1));
+                    return Optional.of(indexedWallet);
+                });
     }
 
     // ── skip cases ────────────────────────────────────────────────────────────
@@ -121,10 +144,10 @@ class WalletActivityServiceTest {
         assertThat(ts.getMinute()).isEqualTo(30);
     }
 
-    // ── wallet UUID mapping ───────────────────────────────────────────────────
+    // ── wallet UUID resolution ───────────────────────────────────────────────
 
     @Test
-    void persistAll_sameWalletAddress_producesDeterministicUUID() {
+    void persistAll_sameWalletAddress_producesSameIndexedWalletId() {
         ActivityEvent second = buildEvent("0xWallet123", "0xTx999", "TOKEN_TRANSFER", "OUTGOING");
         message.setEvents(List.of(event, second));
 
@@ -135,7 +158,7 @@ class WalletActivityServiceTest {
     }
 
     @Test
-    void persistAll_differentWalletAddresses_produceDifferentUUIDs() {
+    void persistAll_differentWalletAddresses_produceDifferentIndexedWalletIds() {
         ActivityEvent second = buildEvent("0xDifferentWallet", "0xTx999", "TOKEN_TRANSFER", "OUTGOING");
         message.setEvents(List.of(event, second));
 
@@ -146,11 +169,21 @@ class WalletActivityServiceTest {
     }
 
     @Test
-    void persistAll_walletAddress_uuidIsNotNull() {
+    void persistAll_walletAddress_indexedWalletIdIsNotNull() {
         service.persistAll(message);
 
         UUID id = captureFirst().getIndexedWalletId();
         assertThat(id).isNotNull();
+    }
+
+    @Test
+    void persistAll_unknownIndexedWallet_skipsEventAndSavesEmptyList() {
+        when(indexedWalletRepository.findByWalletAddressAndNetworkId(event.getWalletAddress(), networkId))
+                .thenReturn(Optional.empty());
+
+        service.persistAll(message);
+
+        assertThat(captureAll()).isEmpty();
     }
 
     // ── amount ────────────────────────────────────────────────────────────────
@@ -165,12 +198,12 @@ class WalletActivityServiceTest {
     }
 
     @Test
-    void persistAll_invalidAmount_throwsNumberFormatException() {
+    void persistAll_invalidAmount_skipsEventAndSavesEmptyList() {
         event.setAmount("not-a-number");
 
-        assertThatThrownBy(() -> service.persistAll(message))
-                .isInstanceOf(NumberFormatException.class);
-        verify(repository, never()).saveAll(anyList());
+        service.persistAll(message);
+
+        assertThat(captureAll()).isEmpty();
     }
 
     // ── asset ─────────────────────────────────────────────────────────────────
@@ -267,21 +300,21 @@ class WalletActivityServiceTest {
     // ── enum validation ───────────────────────────────────────────────────────
 
     @Test
-    void persistAll_invalidEventType_throwsIllegalArgumentException() {
+    void persistAll_invalidEventType_skipsEventAndSavesEmptyList() {
         event.setEventType("UNKNOWN_EVENT");
 
-        assertThatThrownBy(() -> service.persistAll(message))
-                .isInstanceOf(IllegalArgumentException.class);
-        verify(repository, never()).saveAll(anyList());
+        service.persistAll(message);
+
+        assertThat(captureAll()).isEmpty();
     }
 
     @Test
-    void persistAll_invalidActivityType_throwsIllegalArgumentException() {
+    void persistAll_invalidActivityType_skipsEventAndSavesEmptyList() {
         event.setActivityType("UNKNOWN_ACTIVITY");
 
-        assertThatThrownBy(() -> service.persistAll(message))
-                .isInstanceOf(IllegalArgumentException.class);
-        verify(repository, never()).saveAll(anyList());
+        service.persistAll(message);
+
+        assertThat(captureAll()).isEmpty();
     }
 
     @Test
@@ -291,7 +324,7 @@ class WalletActivityServiceTest {
             service.persistAll(message);
         }
 
-        verify(repository, org.mockito.Mockito.times(EventType.values().length)).saveAll(anyList());
+        verify(repository, times(EventType.values().length)).saveAll(anyList());
     }
 
     @Test
@@ -301,7 +334,42 @@ class WalletActivityServiceTest {
             service.persistAll(message);
         }
 
-        verify(repository, org.mockito.Mockito.times(ActivityType.values().length)).saveAll(anyList());
+        verify(repository, times(ActivityType.values().length)).saveAll(anyList());
+    }
+
+    // ── partial batch failure (skip-and-continue) ────────────────────────────
+
+    @Test
+    void persistAll_oneInvalidEventAmongMany_skipsBadEventAndSavesTheRest() {
+        ActivityEvent bad = buildEvent("0xBadWallet", "0xTxBad", "UNKNOWN_EVENT", "INCOMING");
+        ActivityEvent good = buildEvent("0xGoodWallet", "0xTxGood", "TOKEN_TRANSFER", "OUTGOING");
+        message.setEvents(List.of(event, bad, good));
+
+        service.persistAll(message);
+
+        List<WalletActivity> saved = captureAll();
+        assertThat(saved).extracting(WalletActivity::getTxHash)
+                .containsExactly("0xTxHash456", "0xTxGood");
+    }
+
+    @Test
+    void persistAll_allEventsInvalid_savesEmptyListWithoutThrowing() {
+        event.setEventType("UNKNOWN_EVENT");
+
+        service.persistAll(message);
+
+        verify(repository).saveAll(Collections.emptyList());
+    }
+
+    // ── message-level failure ─────────────────────────────────────────────────
+
+    @Test
+    void persistAll_invalidNetworkId_throwsAndDoesNotSave() {
+        message.setNetworkId("not-a-uuid");
+
+        assertThatThrownBy(() -> service.persistAll(message))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(repository, never()).saveAll(anyList());
     }
 
     // ── DB error ──────────────────────────────────────────────────────────────
