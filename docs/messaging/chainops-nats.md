@@ -73,11 +73,11 @@ Every published message is a snapshot of one block's worth of wallet activity. I
 
 | Field | Type | Description |
 |---|---|---|
-| `network_id` | string | Which blockchain network (e.g. `ethereum`, `sepolia`) |
+| `network_id` | UUID string | FK to `networks.id` in the ledger DB. Identifies which blockchain network this block belongs to. The listener resolves this at startup from `network_key` (e.g. `sepolia`) → UUID via `networks` table lookup; consumers read it as-is and resolve back to a network record when needed. |
 | `block_number` | number | The block height that was scanned |
 | `block_hash` | string | Unique identifier of that block |
 | `block_timestamp` | ISO datetime | When the block was mined |
-| `events` | array | One entry per wallet activity detected in this block |
+| `events` | array | One entry per wallet activity detected in this block. May be split across multiple messages — see Batching. |
 
 ### Per-Event Fields
 
@@ -128,8 +128,8 @@ Each NATS message carries these headers outside the JSON body. A consumer can re
 
 | Header | Example | Purpose |
 |---|---|---|
-| `X-Network-ID` | `ethereum` | Identifies which blockchain this batch belongs to |
-| `X-Block-Number` | `21500000` | The block number this batch covers |
+| `X-Network-ID` | `a1b59dde-2714-4fa8-b2a8-92ab6bb51590` | UUID of the network this batch belongs to (same value as the `network_id` field in the body) |
+| `X-Block-Number` | `10927399` | The block number this batch covers |
 | `X-Batch-Index` | `2` | Position of this batch within the block (starts at 1) |
 | `X-Total-Batches` | `3` | How many total batches exist for this block |
 
@@ -139,9 +139,42 @@ There is no separate correlation ID. The combination of `X-Network-ID` and `X-Bl
 
 ## Batching
 
-A single block can contain many transactions. If a block produces more than 100 wallet events, the publisher splits them into chunks of 100 and sends each chunk as a separate NATS message.
+A single block can contain many transactions. If a block produces more than 100 wallet events, the publisher splits them into chunks of 100 and sends each chunk as a **separate NATS message**. The split is implemented in `services/listener/publisher/publisher.go` (`chunk()` and `publishBatch()`); the batch size is the package constant `batchSize`.
 
-All chunks for the same block share identical `network_id`, `block_number`, `block_hash`, and `block_timestamp`. Only the `events` array differs between batches. The consumer uses `X-Total-Batches` to know when it has received the complete picture for a block.
+**Wire shape per batch.** Each batch is a complete, well-formed `BlockActivityMessage` with the same envelope fields and a subset of the original `events` array. All batches for the same block share identical `network_id`, `block_number`, `block_hash`, and `block_timestamp`. Only the `events` array differs.
+
+**Batch identification.** Each message carries the headers `X-Batch-Index` (1-indexed) and `X-Total-Batches`. A single-message block always has `X-Batch-Index: 1` and `X-Total-Batches: 1`. There is no header that needs to change to indicate batching mode — single and batched blocks use the same shape.
+
+**Empty-events blocks are not published.** The listener only publishes when at least one tracked-wallet event was detected. It still advances `networks.last_scanned_block` after processing the block. Consumers cannot rely on a per-block "alive" signal from this stream.
+
+**Consumer obligations:**
+
+- **Do not assume one message = one block.** A block with >100 events arrives as multiple messages with the same `network_id` + `block_number`.
+- **Do not buffer-and-flush by block.** Persist each batch's events as they arrive. Batches may be re-delivered out of order under NAK + redeliver semantics (e.g., batch 2 of 3 is acked, batch 1 is NAKed and retried later) — buffering by block creates a hang under that scenario.
+- **Idempotency is per-event, not per-batch.** Dedup at the row level (`UNIQUE (tx_hash, indexed_wallet_id, activity_type)` on `wallet_activities`) so a redelivered batch produces no duplicate rows.
+- **Do not infer total event count from a single message.** `events.length` is the count *for this batch only*, not for the block.
+
+**Producer ordering guarantee:** within a single block's batches, the publisher sends batch 1, then batch 2, etc., synchronously waiting for each JetStream ack before sending the next. The next block is never started until the previous block's batches all succeed. This means at the broker, batches arrive in publish order *per network*. Consumers should not rely on this for correctness (NAK + redeliver can reorder), but it is the producer's intent.
+
+---
+
+## Schema Versioning
+
+V1 messages do **not** carry a `schema_version` field. The wire contract is the single version defined by `services/listener/schema/block_activity.go`.
+
+Rationale: only one producer, only one consumer, both in-repo, deployed in lockstep. Adding a version field would be ceremony with no current benefit. The cost of "we will need it eventually" is one line of code added later, not a structural redesign.
+
+**When to add `schema_version`:**
+
+1. When a second consumer joins (notifier, webhook dispatcher, analytics aggregator) and they cannot all be rolled forward simultaneously.
+2. When the contract is reshaped in a breaking way (renamed field, type change, removed field, new required field). Additive changes (new optional fields) do not require versioning.
+3. When public ChainOps deployments diverge from this repo's tip.
+
+**How to add it later:**
+
+Add `SchemaVersion int \`json:"schema_version"\`` to `BlockActivityMessage` defaulted to `2` in the producer. Consumers that don't read the field accept it as an unknown JSON key (forward-compatible). Consumers that do read it reject `> max_known` to a dead-letter destination. Producer flip and consumer rollout must be coordinated in the standard "deploy consumers first, then producer" order.
+
+Until that day comes, every message on `chainops.block.activity` is implicitly schema version 1, identified by the absence of a version field.
 
 ---
 
@@ -170,12 +203,12 @@ ChainOps defines three users:
 | User | Role | Can Publish | Can Subscribe | Can Manage Streams |
 |---|---|---|---|---|
 | `admin` | NATS administrator | All subjects | All subjects | Yes |
-| `listener-svc` | ChainOps listener (publisher) | `chainops.block.activity` only | Inbox only (for ack) | No |
-| `ledger-svc` | Ledger service (consumer) | Ack and info subjects only | `chainops.block.activity` + inbox | No |
+| `listener-ops` | ChainOps listener (publisher) | `chainops.block.activity` only | Inbox only (for ack) | No |
+| `ledger-ops` | Ledger service (consumer) | Ack and info subjects only | `chainops.block.activity` + inbox | No |
 
 ### What Each User Can Actually Access
 
-| Subject | `admin` | `listener-svc` | `ledger-svc` |
+| Subject | `admin` | `listener-ops` | `ledger-ops` |
 |---|---|---|---|
 | `chainops.block.activity` (publish) | Yes | **Yes** | No — blocked |
 | `chainops.block.activity` (subscribe) | Yes | No — blocked | **Yes** |
@@ -197,7 +230,7 @@ Neither the listener service nor the ledger service has permission to call `$JS.
 
 ## What Happens If a Service Publishes to the Wrong Subject
 
-If `listener-svc` publishes to a subject that no stream is configured to capture (for example, a typo or a misconfigured `application.yml`), JetStream returns an immediate error:
+If `listener-ops` publishes to a subject that no stream is configured to capture (for example, a typo or a misconfigured `application.yml`), JetStream returns an immediate error:
 
 > `nats: no stream found`
 
@@ -211,8 +244,8 @@ This means stream creation being restricted to admin is also a safety net for mi
 
 | Concern | How ChainOps addresses it |
 |---|---|
-| Unauthorized publishing | `listener-svc` is the only user allowed to publish to `chainops.block.activity` |
-| Unauthorized subscribing | `listener-svc` cannot subscribe; only `ledger-svc` can read messages |
+| Unauthorized publishing | `listener-ops` is the only user allowed to publish to `chainops.block.activity` |
+| Unauthorized subscribing | `listener-ops` cannot subscribe; only `ledger-ops` can read messages |
 | Rogue stream creation | Neither service has `$JS.API.STREAM.CREATE.*` permission — only admin |
 | Wrong subject published | JetStream returns "no stream found" — message rejected, not silently lost |
 | Message loss on consumer downtime | JetStream persists to disk; interest retention holds messages until consumer acks |

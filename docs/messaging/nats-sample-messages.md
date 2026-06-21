@@ -2,6 +2,10 @@
 
 All messages are published to subject `chainops.block.activity`. Each message carries four NATS headers and a JSON body. Headers are shown above each payload.
 
+**Note on `network_id`:** The samples below use UUID `550e8400-e29b-41d4-a716-446655440000` (the seeded Ethereum mainnet row in the `networks` table) for illustration. Sepolia messages carry `a1b59dde-2714-4fa8-b2a8-92ab6bb51590`. Consumers resolve the UUID back to a network record via the ledger's `networks` table. See `chainops-nats.md` § Top-Level Fields for the full rationale.
+
+**Note on schema versioning:** V1 messages do **not** carry a `schema_version` field. See `chainops-nats.md` § Schema Versioning for the decision and the future-extension path.
+
 ---
 
 ## 1. Native ETH — Incoming Transfer
@@ -10,7 +14,7 @@ A monitored wallet receives 0.5 ETH from another address. Gas is not included be
 
 **Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500000
 X-Batch-Index:   1
 X-Total-Batches: 1
@@ -19,7 +23,7 @@ X-Total-Batches: 1
 **Body**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500000,
   "block_hash": "0xabc123def456aaa000111222333444555666777888999aaabbbcccdddeeefff",
   "block_timestamp": "2025-03-15T10:30:00Z",
@@ -51,7 +55,7 @@ A monitored wallet sends 1 ETH to another address. Gas details are always presen
 
 **Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500001
 X-Batch-Index:   1
 X-Total-Batches: 1
@@ -60,7 +64,7 @@ X-Total-Batches: 1
 **Body**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500001,
   "block_hash": "0xbbb222ccc333ddd444eee555fff666aaa777bbb888ccc999ddd000eee111fff2",
   "block_timestamp": "2025-03-15T10:31:00Z",
@@ -98,7 +102,7 @@ A monitored wallet receives 100 USDC. The asset block includes the ERC-20 contra
 
 **Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500002
 X-Batch-Index:   1
 X-Total-Batches: 1
@@ -107,7 +111,7 @@ X-Total-Batches: 1
 **Body**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500002,
   "block_hash": "0xccc333ddd444eee555fff666aaa777bbb888ccc999ddd000eee111fff222aaa3",
   "block_timestamp": "2025-03-15T10:32:00Z",
@@ -144,7 +148,7 @@ A monitored wallet calls a function on a smart contract (e.g. approving a token 
 
 **Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500003
 X-Batch-Index:   1
 X-Total-Batches: 1
@@ -153,7 +157,7 @@ X-Total-Batches: 1
 **Body**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500003,
   "block_hash": "0xddd444eee555fff666aaa777bbb888ccc999ddd000eee111fff222aaa333bbb4",
   "block_timestamp": "2025-03-15T10:33:00Z",
@@ -195,7 +199,7 @@ A monitored wallet deploys a new smart contract. `to_address` is empty because t
 
 **Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500004
 X-Batch-Index:   1
 X-Total-Batches: 1
@@ -204,7 +208,7 @@ X-Total-Batches: 1
 **Body**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500004,
   "block_hash": "0xeee555fff666aaa777bbb888ccc999ddd000eee111fff222aaa333bbb444ccc5",
   "block_timestamp": "2025-03-15T10:34:00Z",
@@ -244,7 +248,7 @@ When a block produces more than 100 wallet events, they are split. Both batches 
 
 **Batch 1 of 2 — Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500010
 X-Batch-Index:   1
 X-Total-Batches: 2
@@ -253,7 +257,7 @@ X-Total-Batches: 2
 **Batch 1 of 2 — Body (abbreviated)**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500010,
   "block_hash": "0xfff666aaa777bbb888ccc999ddd000eee111fff222aaa333bbb444ccc555ddd6",
   "block_timestamp": "2025-03-15T10:40:00Z",
@@ -265,7 +269,7 @@ X-Total-Batches: 2
 
 **Batch 2 of 2 — Headers**
 ```
-X-Network-ID:    ethereum
+X-Network-ID:    550e8400-e29b-41d4-a716-446655440000
 X-Block-Number:  21500010
 X-Batch-Index:   2
 X-Total-Batches: 2
@@ -274,7 +278,7 @@ X-Total-Batches: 2
 **Batch 2 of 2 — Body (abbreviated)**
 ```json
 {
-  "network_id": "ethereum",
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
   "block_number": 21500010,
   "block_hash": "0xfff666aaa777bbb888ccc999ddd000eee111fff222aaa333bbb444ccc555ddd6",
   "block_timestamp": "2025-03-15T10:40:00Z",
