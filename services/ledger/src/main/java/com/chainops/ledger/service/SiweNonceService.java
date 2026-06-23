@@ -1,5 +1,6 @@
 package com.chainops.ledger.service;
 
+import com.chainops.ledger.domain.response.SiweNonceResponse;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -21,7 +22,7 @@ public class SiweNonceService {
 
     public record IssuedNonce(String nonce, Instant issuedAt, Instant expiresAt) {}
 
-    public IssuedNonce issueNonce() {
+    public SiweNonceResponse issueNonce() {
         byte[] bytes = new byte[32];
         SECURE_RANDOM.nextBytes(bytes);
         String nonce = HexFormat.of().formatHex(bytes);
@@ -29,7 +30,7 @@ public class SiweNonceService {
         Instant expiresAt = issuedAt.plus(NONCE_TTL);
         nonceStore.put(nonce, expiresAt);
         log.info("Service = SiweNonceService, issued nonce expiresAt={}", expiresAt);
-        return new IssuedNonce(nonce, issuedAt, expiresAt);
+        return SiweNonceResponse.from(new IssuedNonce(nonce, issuedAt, expiresAt));
     }
 
     public boolean consumeNonce(String nonce) {
