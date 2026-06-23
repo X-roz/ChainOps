@@ -1,8 +1,8 @@
 package com.chainops.ledger.listener;
 
 import com.chainops.ledger.config.NatsProperties;
-import com.chainops.ledger.schema.ActivityEvent;
-import com.chainops.ledger.schema.BlockActivityMessage;
+import com.chainops.ledger.domain.listener.ActivityEvent;
+import com.chainops.ledger.domain.listener.BlockActivityMessage;
 import com.chainops.ledger.service.WalletActivityService;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.databind.ObjectMapper;

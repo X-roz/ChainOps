@@ -1,4 +1,4 @@
-package com.chainops.ledger.schema;
+package com.chainops.ledger.domain.listener;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
